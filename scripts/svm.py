@@ -180,9 +180,6 @@ def results(model, X_test, y_test):
     plt.show()
 
 
-# =========================
-# MAIN
-# =========================
 if __name__ == "__main__":
     with mlflow.start_run():
 
@@ -193,10 +190,8 @@ if __name__ == "__main__":
 
         df_base = pd.read_csv(dfs["TRAINING_DATASET"])
 
-        # target
         df_base = selecting_active_students(df_base)
 
-        # drop useless columns
         df_base.drop(
             columns=[
                 "Sexo",
@@ -209,23 +204,21 @@ if __name__ == "__main__":
             inplace=True,
         )
 
-        # split
         X_train, X_test, y_train, y_test = splitting(df_base)
 
-        # encoding
         X_train, X_test = encoding(X_train, X_test)
 
         # sanitize numeric issues
         X_train = sanitize(X_train)
         X_test = sanitize(X_test)
 
-        # =========================
-        # SCALING (CRITICAL FOR SVM)
-        # =========================
+       
         scaler = StandardScaler()
 
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
+        
+        print(X_train)
 
         mlflow.log_param("train_size", len(X_train))
         mlflow.log_param("test_size", len(X_test))
@@ -238,13 +231,10 @@ if __name__ == "__main__":
             "probability": True,
         }
 
-        # train
         model = model_fitting(X_train, y_train, params)
 
-        # evaluate
         results(model, X_test, y_test)
 
-        # log model
         mlflow.sklearn.log_model(model, "model")
 
         print(f"Total time: {time.time() - start:.2f}s")

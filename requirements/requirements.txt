@@ -9,3 +9,5 @@ catboost
 lightgbm
 mlflow
 boto3
+fastapi
+uvicorn

@@ -14,10 +14,6 @@ services:
     env_file:
       - ../.env
     restart: "no"
-    environment:
-      - ENV=production
-      - JUPYTER_TOKEN=1234
-
 networks:
   shared-net:
     name: ml-network
