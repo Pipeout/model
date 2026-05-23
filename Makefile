@@ -1,6 +1,14 @@
-run:
-	sudo docker compose -f infra/compose.yaml up --remove-orphans
+COMPOSE_FILE=infra/compose.yaml
 build:
-	sudo docker compose -f infra/compose.yaml up --build -d --remove-orphans
+		sudo docker compose -f $(COMPOSE_FILE) up --build $(s)
 down:
-	sudo docker compose -f infra/compose.yaml down --remove-orphans
+		sudo docker compose -f $(COMPOSE_FILE) down -v $(s)
+ps:
+		sudo docker ps
+bash:
+		sudo docker exec -it $(id) bash
+wipe:
+		sudo docker compose -f $(COMPOSE_FILE) down -v --remove-orphans $(s)
+rebuild:
+		$(MAKE) wipe
+		$(MAKE) build
