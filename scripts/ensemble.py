@@ -1,6 +1,5 @@
-from scripts import get_config_file, load_config
-
 import mlflow
+from scripts import get_config_file, load_config
 
 
 class Ensemble:
@@ -52,6 +51,14 @@ class Ensemble:
         import numpy as np
         import pandas as pd
         from lightgbm import LGBMClassifier
+        from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.metrics import classification_report
+        from sklearn.model_selection import cross_val_score
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.svm import SVC
+
         from scripts import (
             clean_feature_values,
             encoding,
@@ -60,13 +67,6 @@ class Ensemble:
             selecting_active_students,
             splitting,
         )
-        from sklearn.ensemble import RandomForestClassifier, StackingClassifier
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.metrics import classification_report
-        from sklearn.model_selection import cross_val_score
-        from sklearn.pipeline import make_pipeline
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.svm import SVC
 
         start = time.time()
 
