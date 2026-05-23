@@ -1,14 +1,15 @@
 services:
-  train:
+  training:
     build:
       context: ..
       dockerfile: infra/Dockerfile
-    container_name: train-app
+    container_name: training-pipeout
+    image: training-pipeout
     networks:
       - shared-net
     volumes:
-      - ../scripts:/training-app/scripts
-      - ../configs:/training-app/configs
+      - ../scripts:/app/scripts
+      - ../configs:/app/configs
     ports:
       - "8081:8081"
     env_file:

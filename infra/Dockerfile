@@ -1,15 +1,13 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
-WORKDIR /training-app
+WORKDIR /app
+RUN apt-get update && apt-get install -y libgomp1
 
-COPY scripts/ scripts/
-COPY configs/ configs/
-COPY requirements/ requirements/
+COPY scripts/ /app/scripts/
+COPY configs/ /app/configs/
+COPY infra/requirements.txt .
 
-RUN pip install --upgrade pip \
-    && pip install --no-cache-dir -r /training-app/requirements/requirements.txt \
-    && pip install --no-cache-dir fastapi uvicorn \
-    && apt-get update && apt-get install -y --no-install-recommends libgomp1
+RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8081
 
