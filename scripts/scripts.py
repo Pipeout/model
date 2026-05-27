@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import time
 import unicodedata
@@ -25,11 +26,8 @@ from sklearn.preprocessing import OneHotEncoder
 
 import mlflow
 
-mlflow.set_tracking_uri("http://mlflow:5000")
-experiment_name = "fourthr"
-# mlflow.create_experiment(
-#     experiment_name, artifact_location="s3://pipeout-database/mlflow-artifacts"
-# )
+mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
+experiment_name = "cloud-version"
 mlflow.set_experiment(experiment_name)
 
 

@@ -1,6 +1,4 @@
-pandas
-fastapi==0.136.1
-uvicorn==0.34.3
+pandas==3.0.1
 numpy==2.4
 PyYAML==6.0.3
 boto3==1.38.0
