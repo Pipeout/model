@@ -1,8 +1,7 @@
 import os
 
+import matplotlib.pyplot as plt
 from scripts import get_config_file, load_config
-
-import mlflow
 
 
 class Ensemble:
@@ -36,10 +35,10 @@ class Ensemble:
         rec = recall_score(y_test, y_pred)
         f1 = f1_score(y_test, y_pred)
 
-        mlflow.log_metric("accuracy", acc)
-        mlflow.log_metric("precision", prec)
-        mlflow.log_metric("recall", rec)
-        mlflow.log_metric("f1_score", f1)
+        # mlflow.log_metric("accuracy", acc)
+        # mlflow.log_metric("precision", prec)
+        # mlflow.log_metric("recall", rec)
+        # mlflow.log_metric("f1_score", f1)
 
         disp = ConfusionMatrixDisplay(
             confusion_matrix=cm, display_labels=["Formado", "Evadido"]
@@ -49,7 +48,7 @@ class Ensemble:
         plot_path = "confusion_matrix.png"
         plt.savefig(plot_path)
         plt.close()  # Free the memory
-        mlflow.log_artifact(plot_path)
+        # mlflow.log_artifact(plot_path)
 
     def run(self):
         import time
@@ -158,17 +157,17 @@ class Ensemble:
 
         results(clf, y_test, X_test)
 
-        mlflow.log_param("train_size", len(X_train))
-        mlflow.log_param("test_size", len(X_test))
+        # mlflow.log_param("train_size", len(X_train))
+        # mlflow.log_param("test_size", len(X_test))
 
 
 if __name__ == "__main__":
-    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
-    experiment_name = "cloud-version"
-    mlflow.set_experiment(experiment_name)
-    with mlflow.start_run() as run:
-        print(f"Experiment ID: {run.info.experiment_id}")
-        CONFIG_PATH = get_config_file()
-        dfs = load_config(CONFIG_PATH)
-        ensemble = Ensemble(dfs)
-        ensemble.run()
+    #  mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
+    # experiment_name = "cloud-version"
+    # mlflow.set_experiment(experiment_name)
+    # with mlflow.start_run() as run:
+    #  print(f"Experiment ID: {run.info.experiment_id}")
+    CONFIG_PATH = get_config_file()
+    dfs = load_config(CONFIG_PATH)
+    ensemble = Ensemble(dfs)
+    ensemble.run()

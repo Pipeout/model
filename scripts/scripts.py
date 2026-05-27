@@ -24,11 +24,11 @@ from sklearn.metrics import (
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.preprocessing import OneHotEncoder
 
-import mlflow
+# import mlflow
 
-mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
-experiment_name = "cloud-version"
-mlflow.set_experiment(experiment_name)
+# mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
+# experiment_name = "cloud-version"
+# mlflow.set_experiment(experiment_name)
 
 
 def load_config(CONFIG_PATH):
@@ -143,7 +143,7 @@ def model_fitting(X_train, y_train, params):
 
     lgb.fit(X_train, y_train)
 
-    mlflow.log_params(params)
+    #  mlflow.log_params(params)
     print(type(lgb))
     return lgb
 
@@ -165,10 +165,10 @@ def results(model, y_test, X_test):
     rec = recall_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred)
 
-    mlflow.log_metric("accuracy", acc)
-    mlflow.log_metric("precision", prec)
-    mlflow.log_metric("recall", rec)
-    mlflow.log_metric("f1_score", f1)
+    # mlflow.log_metric("accuracy", acc)
+    # mlflow.log_metric("precision", prec)
+    # mlflow.log_metric("recall", rec)
+    # mlflow.log_metric("f1_score", f1)
 
     disp = ConfusionMatrixDisplay(
         confusion_matrix=cm, display_labels=["Formado", "Evadido"]
@@ -200,49 +200,49 @@ def encoding(X_train, X_test, cat_features):
 
 
 if __name__ == "__main__":
-    with mlflow.start_run() as run:
-        startTime = time.time()
-        print(f"Experiment ID: {run.info.experiment_id}")
-        CONFIG_PATH = get_config_file()
-        dfs = load_config(CONFIG_PATH)
+    #  with mlflow.start_run() as run:
+    startTime = time.time()
+    # print(f"Experiment ID: {run.info.experiment_id}")
+    CONFIG_PATH = get_config_file()
+    dfs = load_config(CONFIG_PATH)
 
-        df_base = pd.read_csv(dfs["TRAINING_DATASET"])
+    df_base = pd.read_csv(dfs["TRAINING_DATASET"])
 
-        df_base = selecting_active_students(df_base)
+    df_base = selecting_active_students(df_base)
 
-        columns_to_drop = [
-            "Sexo",
-            "Raça",
-            "Estrutura",
-            "Período ingresso",
-            "Tipo ingresso",
-            "AnoSem",
-        ]
+    columns_to_drop = [
+        "Sexo",
+        "Raça",
+        "Estrutura",
+        "Período ingresso",
+        "Tipo ingresso",
+        "AnoSem",
+    ]
 
-        df_base.drop(
-            columns=columns_to_drop,
-            inplace=True,
-        )
+    df_base.drop(
+        columns=columns_to_drop,
+        inplace=True,
+    )
 
-        params = {"iterations": 1000, "learning_rate": 0.01, "depth": 6, "verbose": 0}
+    params = {"iterations": 1000, "learning_rate": 0.01, "depth": 6, "verbose": 0}
 
-        X_train, X_test, y_train, y_test = splitting(df_base)
+    X_train, X_test, y_train, y_test = splitting(df_base)
 
-        cat_features = X_train.select_dtypes(
-            include=["object", "bool", "category"]
-        ).columns.tolist()
+    cat_features = X_train.select_dtypes(
+        include=["object", "bool", "category"]
+    ).columns.tolist()
 
-        for col in cat_features:
-            X_train[col] = clean_feature_values(X_train[col])
-            X_test[col] = clean_feature_values(X_test[col])
+    for col in cat_features:
+        X_train[col] = clean_feature_values(X_train[col])
+        X_test[col] = clean_feature_values(X_test[col])
 
-        X_train, X_test = encoding(X_train, X_test, cat_features)
+    X_train, X_test = encoding(X_train, X_test, cat_features)
 
-        mlflow.log_param("train_size", len(X_train))
-        mlflow.log_param("test_size", len(X_test))
-        model = model_fitting(X_train, y_train, params)
-        results(model, y_test, X_test)
-        mlflow.lightgbm.log_model(model, "model")
+    # mlflow.log_param("train_size", len(X_train))
+    # mlflow.log_param("test_size", len(X_test))
+    model = model_fitting(X_train, y_train, params)
+    results(model, y_test, X_test)
+    # mlflow.lightgbm.log_model(model, "model")
 
-        totalTime = time.time() - startTime
-        print(f"Total training time: {totalTime:.2f} seconds")
+    totalTime = time.time() - startTime
+    print(f"Total training time: {totalTime:.2f} seconds")
