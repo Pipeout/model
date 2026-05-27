@@ -1,4 +1,4 @@
-name: Build and Register Feature Engineering Task
+name: Build and Register Model Traning Task
 
 on:
   push:
