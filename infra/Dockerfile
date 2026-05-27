@@ -7,6 +7,6 @@ COPY scripts/ /app/scripts/
 COPY configs/ /app/configs/
 COPY infra/requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
 CMD ["python", "scripts/ensemble.py"]
