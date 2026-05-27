@@ -1,3 +1,5 @@
+import os
+
 from scripts import get_config_file, load_config
 
 import mlflow
@@ -44,7 +46,10 @@ class Ensemble:
         )
         disp.plot(cmap="Blues")
         plt.title("Matriz de Confusão: Evasão Estudantil")
-        plt.show()
+        plot_path = "confusion_matrix.png"
+        plt.savefig(plot_path)
+        plt.close()  # Free the memory
+        mlflow.log_artifact(plot_path)
 
     def run(self):
         import time
@@ -158,6 +163,9 @@ class Ensemble:
 
 
 if __name__ == "__main__":
+    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
+    experiment_name = "cloud-version"
+    mlflow.set_experiment(experiment_name)
     with mlflow.start_run() as run:
         print(f"Experiment ID: {run.info.experiment_id}")
         CONFIG_PATH = get_config_file()
