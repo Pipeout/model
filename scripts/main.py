@@ -452,7 +452,6 @@ class EvasionModel:
         X_train[cat_features] = X_train[cat_features].apply(self.clean_feature_values)
         X_test[cat_features] = X_test[cat_features].apply(self.clean_feature_values)
 
-        mlflow.log_param("feature_count_after_encoding", X_train_enc.shape[1])
 
         if X_calib is not None:
             X_calib = X_calib.copy()
@@ -463,6 +462,8 @@ class EvasionModel:
         # Fit dummy columns on TRAIN only; align test (and calibration) to
         # those columns.
         X_train_enc, X_test_enc = self.encoding(X_train, X_test, cat_features)
+
+        mlflow.log_param("feature_count_after_encoding", X_train_enc.shape[1])
 
         if X_calib is not None:
             _, X_calib_enc = self.encoding(X_train, X_calib, cat_features)
