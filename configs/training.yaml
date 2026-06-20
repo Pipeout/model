@@ -3,4 +3,4 @@ CURRENT_DATASET: "CIENCIA_DA_COMPUTACAO"
 DATASETS:
   CIENCIA_DA_COMPUTACAO:
     TRAINING_DATASET: s3://pipeout-database/datasets/ciencia_da_computacao/training/training_ciencia_da_computacao_2017_2025_1.csv
-    RESULTS: s3://pipeout-database/datasets/ciencia_da_computacao/results/
+    RESULTS_PATH: s3://pipeout-database/datasets/ciencia_da_computacao/results/
