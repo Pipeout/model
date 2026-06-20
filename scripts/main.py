@@ -394,7 +394,7 @@ class EvasionModel:
     # ------------------------------------------------------------------ #
     # Shared data preparation (train/test/calibration)
     # ------------------------------------------------------------------ #
-    def prepare_data(self, csv_path, calib_size=0.0):
+    def prepare_data(self, csv_path, calib_size=0.0, log_params = True):
         """
         Loads the CSV, filters to non-active students, drops unused
         columns, splits (grouped by student id), optionally carves a
@@ -420,8 +420,10 @@ class EvasionModel:
         X_train, X_test, y_train, y_test, groups_train, groups_test = self.splitting(
             df_base
         )
-        mlflow.log_param("total_dataset_rows", len(df_base))
-        mlflow.log_param("test_size", len(X_test))
+        if log_params:
+            mlflow.log_param("total_dataset_rows", len(df_base))
+            mlflow.log_param("test_size", len(X_test))
+
 
         X_calib = None
         y_calib = None
@@ -437,11 +439,13 @@ class EvasionModel:
             ) = self.split_calibration_set(
                 X_train, y_train, groups_train, calib_size=calib_size
             )
-            mlflow.log_param("calibration_split_size", len(X_calib))
+            if log_params:
+                mlflow.log_param("calibration_split_size", len(X_calib))
         else:
-            mlflow.log_param("calibration_split_size", 0)
-
-        mlflow.log_param("final_train_size", len(X_train))
+            if log_params:
+                mlflow.log_param("calibration_split_size", 0)
+        if log_params:
+            mlflow.log_param("final_train_size", len(X_train))
 
         cat_features = X_train.select_dtypes(
             include=["object", "bool", "category"]
@@ -463,7 +467,8 @@ class EvasionModel:
         # those columns.
         X_train_enc, X_test_enc = self.encoding(X_train, X_test, cat_features)
 
-        mlflow.log_param("feature_count_after_encoding", X_train_enc.shape[1])
+        if log_params:
+            mlflow.log_param("feature_count_after_encoding", X_train_enc.shape[1])
 
         if X_calib is not None:
             _, X_calib_enc = self.encoding(X_train, X_calib, cat_features)
@@ -858,6 +863,7 @@ if __name__ == "__main__":
         model_runner = EvasionModel()
         dfs = model_runner.load_config()
         csv_path = dfs["TRAINING_DATASET"]
+        results_path = dfs["RESULTS_PATH"]
 
         training_hash = run.info.run_id
         print(f"\n[MLflow] Started Run. Training Hash: {training_hash}")
@@ -874,7 +880,7 @@ if __name__ == "__main__":
         # actually fit on. (run_ensemble already fit `clf` on this same
         # X_train internally; we just need its columns here.)
         X_train_for_alignment, _X_test, _y_train, _y_test, _gtr, _gte = (
-            model_runner.prepare_data(csv_path, calib_size=0.0)
+            model_runner.prepare_data(csv_path, calib_size=0.0, log_params=False)
         )
 
         # Score currently active students and write results/ranking CSV.
@@ -882,6 +888,7 @@ if __name__ == "__main__":
             csv_path,
             model=clf,
             X_train=X_train_for_alignment,
+            output_dir=results_path
         )
 
         total_time = time.time() - start_time
