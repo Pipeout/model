@@ -9,4 +9,4 @@ COPY infra/requirements.txt .
 
 RUN pip install -r requirements.txt
 
-CMD ["python", "scripts/ensemble.py"]
+CMD ["python", "scripts/main.py"]
