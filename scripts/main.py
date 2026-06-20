@@ -800,10 +800,11 @@ class EvasionModel:
         self,
         csv_path: str,
         model,
+        training_hash: str,
         X_train: pd.DataFrame,
         output_dir: str = "results",
         output_filename: str = None,
-        training_hash: str
+        
     ) -> pd.DataFrame:
         """
         Full inference pipeline for currently active students:
@@ -859,7 +860,7 @@ if __name__ == "__main__":
     mlflow.set_experiment("evasion_risk_scoring_v1")
     with mlflow.start_run(run_name="Stacked_Ensemble") as run:
         start_time = time.time()
-        
+
         model_runner = EvasionModel()
         dfs = model_runner.load_config()
         csv_path = dfs["TRAINING_DATASET"]
@@ -887,9 +888,9 @@ if __name__ == "__main__":
         model_runner.run_risk_scoring(
             csv_path,
             model=clf,
+            training_hash=training_hash,
             X_train=X_train_for_alignment,
             output_dir=results_path,
-            training_hash=training_hash,
         )
         
         mlflow.log_param("training_hash", training_hash)
