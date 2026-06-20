@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import time
 import unicodedata
@@ -860,6 +861,7 @@ if __name__ == "__main__":
         training_hash = run.info.run_id
         print(f"\n[MLflow] Started Run. Training Hash: {training_hash}")
 
+        # 3. If you want to tag it for easy searching in the UI:
         mlflow.set_tag("version", "v1.0")
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
