@@ -856,7 +856,7 @@ if __name__ == "__main__":
 
         model_runner = EvasionModel()
         dfs = model_runner.load_config()
-        csv_path = "training_ciencia_da_computacao_ativos_2017_2025_1.csv"
+        csv_path = dfs["TRAINING_DATASET"]
 
         training_hash = run.info.run_id
         print(f"\n[MLflow] Started Run. Training Hash: {training_hash}")
