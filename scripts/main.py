@@ -802,9 +802,7 @@ class EvasionModel:
         model,
         training_hash: str,
         X_train: pd.DataFrame,
-        output_dir: str = "results",
-        output_filename: str = None,
-        
+        output_dir: str ,        
     ) -> pd.DataFrame:
         """
         Full inference pipeline for currently active students:
@@ -841,17 +839,14 @@ class EvasionModel:
         print("\n--- Top 10 students by evasion risk ---")
         print(df_ranking.head(10))
 
-        out_dir = Path(output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
 
-        if output_filename is None:
-            output_filename = f"{training_hash}_risco_evasao.csv"
+        output_filename = f"{training_hash}_risco_evasao.csv"
 
-        out_path = out_dir / output_filename
+        out_path = f"{output_dir}/{output_filename}"
         df_ranking.to_csv(out_path, index=False)
         print(f"\nRisk ranking written to: {out_path}")
 
-        mlflow.log_artifact(str(out_path))
+        mlflow.log_param("risk scoring filepath", out_path)
         return df_ranking
 
 
