@@ -803,6 +803,7 @@ class EvasionModel:
         X_train: pd.DataFrame,
         output_dir: str = "results",
         output_filename: str = None,
+        training_hash: str
     ) -> pd.DataFrame:
         """
         Full inference pipeline for currently active students:
@@ -843,8 +844,7 @@ class EvasionModel:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         if output_filename is None:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            output_filename = f"risco_evasao_{timestamp}.csv"
+            output_filename = f"{training_hash}_risco_evasao.csv"
 
         out_path = out_dir / output_filename
         df_ranking.to_csv(out_path, index=False)
@@ -859,7 +859,7 @@ if __name__ == "__main__":
     mlflow.set_experiment("evasion_risk_scoring_v1")
     with mlflow.start_run(run_name="Stacked_Ensemble") as run:
         start_time = time.time()
-
+        
         model_runner = EvasionModel()
         dfs = model_runner.load_config()
         csv_path = dfs["TRAINING_DATASET"]
@@ -888,8 +888,11 @@ if __name__ == "__main__":
             csv_path,
             model=clf,
             X_train=X_train_for_alignment,
-            output_dir=results_path
+            output_dir=results_path,
+            training_hash=training_hash,
         )
+        
+        mlflow.log_param("training_hash", training_hash)
 
         total_time = time.time() - start_time
         mlflow.log_metric("total_execution_time_seconds", total_time)
