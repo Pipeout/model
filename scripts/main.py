@@ -847,7 +847,7 @@ class EvasionModel:
         print(f"\nRisk ranking written to: {out_path}")
 
         mlflow.log_param("risk scoring filepath", out_path)
-        return df_ranking
+        return 
 
 
 if __name__ == "__main__":
