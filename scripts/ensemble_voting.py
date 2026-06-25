@@ -6,14 +6,19 @@ import unicodedata
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import mlflow.sklearn
 import numpy as np
 import pandas as pd
 import yaml
+from sklearn.ensemble import VotingClassifier
+from lightgbm import LGBMClassifier
 from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
-    PrecisionRecallDisplay,
+    fbeta_score,
+    average_precision_score,
     RocCurveDisplay,
     accuracy_score,
     classification_report,
@@ -22,14 +27,14 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     roc_auc_score,
-    fbeta_score,
-    average_precision_score
 )
 from sklearn.model_selection import (
     GroupKFold,
     GroupShuffleSplit,
 )
-
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 
 import mlflow
 
@@ -262,134 +267,81 @@ class EvasionModel:
         )
         return X_train_encoded, X_test_encoded
 
+    # ------------------------------------------------------------------ #
+    # Modeling helpers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def model_fitting(X_train, y_train, params):
+        lgb = LGBMClassifier(**params)
+        lgb.fit(X_train, y_train)
+        print(type(lgb))
+        return lgb
 
-    
-    def save_roc_pr_curves(self, y_test, y_proba, prefix=""):
+    @staticmethod
+    def results(model, y_test, X_test, save_path=None, prefix="", beta=3):
         """
-        Saves ROC and Precision-Recall curves in a clean publication-style format.
+        Prints classification metrics (including ROC-AUC) and shows/saves
+        the confusion matrix.
         """
+        y_pred = model.predict(X_test)
+        cm = confusion_matrix(y_test, y_pred)
 
-        # -------------------------
-        # ROC CURVE
-        # -------------------------
-        fig, ax = plt.subplots(figsize=(7, 5))
+        y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
 
-        RocCurveDisplay.from_predictions(
-            y_test,
-            y_proba,
-            ax=ax,
-            color="orange",
-            linewidth=2
+        print("\n--- Métricas Detalhadas ---")
+        print(
+            classification_report(
+                y_test, y_pred, target_names=["Formado (0)", "Evadido (1)"]
+            )
         )
+        acc = accuracy_score(y_test, y_pred)
+        prec = precision_score(y_test, y_pred)
+        rec = recall_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred)
+        fbeta = fbeta_score(y_test, y_pred, beta=beta)
 
-        ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
-
-        ax.set_title("ROC Curve", fontsize=14, fontweight="bold")
-        ax.set_xlabel("False Positive Rate")
-        ax.set_ylabel("True Positive Rate")
-
-        ax.grid(True, alpha=0.3)
-
-        roc_path = f"{prefix}roc_curve.png"
-        plt.savefig(roc_path, dpi=300, bbox_inches="tight")
-        plt.close()
-
-        # -------------------------
-        # PR CURVE
-        # -------------------------
-        fig, ax = plt.subplots(figsize=(7, 5))
-
-        PrecisionRecallDisplay.from_predictions(
-            y_test,
-            y_proba,
-            ax=ax,
-            color="orange",
-            linewidth=2
-        )
-
-        ax.set_title("Precision–Recall Curve", fontsize=14, fontweight="bold")
-        ax.set_xlabel("Recall")
-        ax.set_ylabel("Precision")
-
-        baseline = sum(y_test) / len(y_test)
-        ax.hlines(baseline, 0, 1, linestyles="--", colors="gray", linewidth=1)
-
-        ax.grid(True, alpha=0.3)
-
-        pr_path = f"{prefix}pr_curve.png"
-        plt.savefig(pr_path, dpi=300, bbox_inches="tight")
-        plt.close()
-        return roc_path, pr_path
-    
-
+        print(f"F_beta: {fbeta}") 
 
     
-    def results(self, model, y_test, X_test, save_path=None, prefix="", beta=2):
-            """
-            Prints classification metrics (including ROC-AUC) and shows/saves
-            the confusion matrix.
-            """
-            y_pred = model.predict(X_test)
-            cm = confusion_matrix(y_test, y_pred)
+        auc = None
+        auprc = None
+        roc_auc = None
+        if y_proba is not None:
+            auprc = average_precision_score(y_test, y_proba) # Implementation of AUPRC
+            roc_auc = roc_auc_score(y_test, y_proba)
+            print(f"AUPRC: {auprc:.4f}")
+            print(f"ROC-AUC: {roc_auc:.4f}")
 
-            y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
+            # Log fundamental metrics to MLflow
+        mlflow.log_metric(f"{prefix}accuracy", acc)
+        mlflow.log_metric(f"{prefix}precision", prec)
+        mlflow.log_metric(f"{prefix}recall", rec)
+        mlflow.log_metric(f"{prefix}f1_score", f1)
+        mlflow.log_metric(f"{prefix}fbeta_{beta}", fbeta)
+        if auprc is not None: mlflow.log_metric(f"{prefix}auprc", auprc)
+        if roc_auc is not None: mlflow.log_metric(f"{prefix}roc_auc", roc_auc)
 
-            print("\n--- Métricas Detalhadas ---")
-            print(
-                classification_report(
-                    y_test, y_pred, target_names=["Formado (0)", "Evadido (1)"]
-                )
-            )
-            acc = accuracy_score(y_test, y_pred)
-            prec = precision_score(y_test, y_pred)
-            rec = recall_score(y_test, y_pred)
-            f1 = f1_score(y_test, y_pred)
-            fbeta = fbeta_score(y_test, y_pred, beta=beta)
 
-            print(f"F_{beta}: {fbeta}") 
+        disp = ConfusionMatrixDisplay(
+            confusion_matrix=cm, display_labels=["Formado", "Evadido"]
+        )
+        disp.plot(cmap="Blues")
+        plt.title("Matriz de Confusão: Evasão Estudantil")
 
-        
-            auc = None
-            auprc = None
-            roc_auc = None
-            if y_proba is not None:
-                auprc = average_precision_score(y_test, y_proba) # Implementation of AUPRC
-                roc_auc = roc_auc_score(y_test, y_proba)
-                print(f"AUPRC: {auprc:.4f}")
-                print(f"ROC-AUC: {roc_auc:.4f}")
-                roc_path, pr_path = self.save_roc_pr_curves(y_test, y_proba, prefix)
-                mlflow.log_artifact(roc_path)
-                mlflow.log_artifact(pr_path)
+        if save_path:
+            plt.savefig(save_path)
+            plt.close()
+            mlflow.log_artifact(save_path)
+        else:
+            plt.show()
 
-                # Log fundamental metrics to MLflow
-            mlflow.log_metric(f"{prefix}accuracy", acc)
-            mlflow.log_metric(f"{prefix}precision", prec)
-            mlflow.log_metric(f"{prefix}recall", rec)
-            mlflow.log_metric(f"{prefix}f1_score", f1)
-            mlflow.log_metric(f"{prefix}fbeta_{beta}", fbeta)
-            if auprc is not None: mlflow.log_metric(f"{prefix}auprc", auprc)
-            if roc_auc is not None: mlflow.log_metric(f"{prefix}roc_auc", roc_auc)
-
-            disp = ConfusionMatrixDisplay(
-                confusion_matrix=cm, display_labels=["Formado", "Evadido"]
-            )
-            disp.plot(cmap="Blues")
-            plt.title("Matriz de Confusão: Evasão Estudantil")
-
-            if save_path:
-                plt.savefig(save_path)
-                plt.close()
-                mlflow.log_artifact(save_path)
-            else:
-                plt.show()
-
-            return {
-                "accuracy": acc,
-                "precision": prec,
-                "recall": rec,
-                "f1": f1,
-                "roc_auc": auc,
-            }
+        return {
+            "accuracy": acc,
+            "precision": prec,
+            "recall": rec,
+            "f1": f1,
+            "roc_auc": auc,
+        }
 
 
     @staticmethod
@@ -582,12 +534,7 @@ class EvasionModel:
 
         return model, calibrated_model, metrics
 
-    def run_random_forest(
-        self,
-        csv_path,
-        save_path="rf_confusion_matrix.png",
-        calib_size=0.2,
-    ):
+    def run_ensemble(self, csv_path, save_path="confusion_matrix.png", calib_size=0.2):
         (
             X_train,
             X_calib,
@@ -599,94 +546,90 @@ class EvasionModel:
             groups_test,
         ) = self.prepare_data(csv_path, calib_size=calib_size)
 
+        # ----------------------------
+        # Safety cleanup
+        # ----------------------------
         X_train = X_train.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_calib = X_calib.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
+        # ----------------------------
+        # Models
+        # ----------------------------
+        lgb_params = {
+            "n_estimators": 1500,
+            "learning_rate": 0.005,
+            "max_depth": 7,
+            "verbose": -1,
+            "random_state": 42,
+            "objective": "binary",
+            "is_unbalance": False,
+            "scale_pos_weight": 5.0,
+            "boosting_type": "gbdt",
+        }
 
-        params = {
-            "n_estimators": 500,               # Increase for more robust bagging
-            "criterion": "gini",               # "gini" or "entropy" - both work, stick to gini
-            "max_depth": 10,                   # Constraint to prevent overfitting the majority class
-            "min_samples_split": 5,            # Increase slightly to improve generalization
-            "class_weight": "balanced_subsample", # Crucial: Adjusts weights in each bootstrap sample
+        svc_params = {
+            "C": 1.0,
+            "kernel": "rbf",
+            "gamma": "scale",
+            "probability": True,
             "random_state": 42,
         }
 
-        rf = RandomForestClassifier( **params
-        )
+        rf_params = {
+            "n_estimators": 500,
+            "criterion": "gini",
+            "max_depth": 10,
+            "min_samples_split": 5,
+            "class_weight": "balanced_subsample",
+            "random_state": 42,
+        }
 
-        gkf = GroupKFold(n_splits=10)
-        auc_scores = []
+        mlflow.log_param("model_type", "VotingClassifier")
+        mlflow.log_param("base_estimators", "RandomForest, LightGBM, SVC")
+        mlflow.log_param("voting", "soft")
 
-        for train_idx, val_idx in gkf.split(
-            X_train,
-            y_train,
-            groups=groups_train,
-        ):
-            X_fold_train = X_train.iloc[train_idx]
-            y_fold_train = y_train.iloc[train_idx]
+        # ----------------------------
+        # Voting model
+        # ----------------------------
+        def _build_voting_classifier():
+            estimators = [
+                ("rf", RandomForestClassifier(**rf_params)),
+                ("lgb", LGBMClassifier(**lgb_params)),
+                ("svm", make_pipeline(StandardScaler(), SVC(**svc_params))),
+            ]
 
-            X_fold_val = X_train.iloc[val_idx]
-            y_fold_val = y_train.iloc[val_idx]
-
-            rf_fold = RandomForestClassifier(
-                n_estimators=100,
-                criterion="gini",
-                max_depth=None,
-                min_samples_split=2,
-                random_state=42,
+            return VotingClassifier(
+                estimators=estimators,
+                voting="soft",
+                weights=[2, 3, 1],
             )
 
-            rf_fold.fit(X_fold_train, y_fold_train)
+        clf = _build_voting_classifier()
+        clf.fit(X_train, y_train)
 
-            y_proba = rf_fold.predict_proba(X_fold_val)[:, 1]
+        # ----------------------------
+        # Evaluation
+        # ----------------------------
+        y_pred = clf.predict(X_test)
 
-            auc_scores.append(
-                roc_auc_score(y_fold_val, y_proba)
-            )
+        print(classification_report(y_test, y_pred))
 
-        print(
-            f"CV ROC-AUC: {np.mean(auc_scores):.4f} "
-            f"(+/- {np.std(auc_scores):.4f})"
-        )
+        metrics = self.results(clf, y_test, X_test, save_path=save_path)
+        self.plot_roc_curve(clf, y_test, X_test)
 
-        rf.fit(X_train, y_train)
+        # ----------------------------
+        # Calibration
+        # ----------------------------
+        calibrated_clf = self.calibrate_model(clf, X_calib, y_calib)
 
-        metrics = self.results(
-            rf,
-            y_test,
-            X_test,
-            save_path=save_path,
-        )
+        print("\n--- Calibrated ensemble results ---")
+        self.results(calibrated_clf, y_test, X_test)
+        self.plot_calibration_curve(calibrated_clf, y_test, X_test)
 
-        self.plot_roc_curve(
-            rf,
-            y_test,
-            X_test,
-        )
+        mlflow.sklearn.log_model(calibrated_clf, "calibrated_voting_model")
 
-        calibrated_rf = self.calibrate_model(
-            rf,
-            X_calib,
-            y_calib,
-        )
-
-        print("\n--- Calibrated RF results ---")
-
-        self.results(
-            calibrated_rf,
-            y_test,
-            X_test,
-        )
-
-        self.plot_calibration_curve(
-            calibrated_rf,
-            y_test,
-            X_test,
-        )
-
-        return rf, calibrated_rf, metrics
+        return clf, calibrated_clf, metrics
     # ------------------------------------------------------------------ #
     # Inference / risk-scoring for currently active students
     # ------------------------------------------------------------------ #
@@ -886,7 +829,7 @@ if __name__ == "__main__":
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
         # Train the stacking ensemble (with calibration + ROC-AUC reporting).
-        clf, calibrated_clf, metrics = model_runner.run_random_forest(csv_path)
+        clf, calibrated_clf, metrics = model_runner.run_ensemble(csv_path)
 
         # Recompute X_train (without the calibration carve-out) purely as the
         # column-alignment reference for inference, matching what `clf` was

@@ -16,6 +16,8 @@ from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
+    fbeta_score,
+    average_precision_score,
     RocCurveDisplay,
     accuracy_score,
     classification_report,
@@ -275,13 +277,15 @@ class EvasionModel:
         return lgb
 
     @staticmethod
-    def results(model, y_test, X_test, save_path=None, prefix=""):
+    def results(model, y_test, X_test, save_path=None, prefix="", beta=3):
         """
         Prints classification metrics (including ROC-AUC) and shows/saves
         the confusion matrix.
         """
         y_pred = model.predict(X_test)
         cm = confusion_matrix(y_test, y_pred)
+
+        y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
 
         print("\n--- Métricas Detalhadas ---")
         print(
@@ -293,19 +297,29 @@ class EvasionModel:
         prec = precision_score(y_test, y_pred)
         rec = recall_score(y_test, y_pred)
         f1 = f1_score(y_test, y_pred)
+        fbeta = fbeta_score(y_test, y_pred, beta=beta)
 
-        # Log fundamental metrics to MLflow
+        print(f"F_beta: {fbeta}") 
+
+    
+        auc = None
+        auprc = None
+        roc_auc = None
+        if y_proba is not None:
+            auprc = average_precision_score(y_test, y_proba) # Implementation of AUPRC
+            roc_auc = roc_auc_score(y_test, y_proba)
+            print(f"AUPRC: {auprc:.4f}")
+            print(f"ROC-AUC: {roc_auc:.4f}")
+
+            # Log fundamental metrics to MLflow
         mlflow.log_metric(f"{prefix}accuracy", acc)
         mlflow.log_metric(f"{prefix}precision", prec)
         mlflow.log_metric(f"{prefix}recall", rec)
         mlflow.log_metric(f"{prefix}f1_score", f1)
+        mlflow.log_metric(f"{prefix}fbeta_{beta}", fbeta)
+        if auprc is not None: mlflow.log_metric(f"{prefix}auprc", auprc)
+        if roc_auc is not None: mlflow.log_metric(f"{prefix}roc_auc", roc_auc)
 
-        auc = None
-        if hasattr(model, "predict_proba"):
-            y_proba = model.predict_proba(X_test)[:, 1]
-            auc = roc_auc_score(y_test, y_proba)
-            print(f"ROC-AUC: {auc:.4f}")
-            mlflow.log_metric(f"{prefix}roc_auc", auc)
 
         disp = ConfusionMatrixDisplay(
             confusion_matrix=cm, display_labels=["Formado", "Evadido"]
@@ -327,6 +341,7 @@ class EvasionModel:
             "f1": f1,
             "roc_auc": auc,
         }
+
 
     @staticmethod
     def plot_roc_curve(model, y_test, X_test, save_path=None):
@@ -535,11 +550,15 @@ class EvasionModel:
         X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
         lgb_params = {
-            "n_estimators": 1000,
-            "learning_rate": 0.01,
-            "max_depth": 6,
-            "verbose": -1,
-            "random_state": 42,
+                "n_estimators": 1500,           # Increase to allow more learning cycles
+                "learning_rate": 0.005,         # Decrease to make learning more stable/cautious
+                "max_depth": 7,                 # Slight increase to capture complex minority patterns
+                "verbose": -1,
+                "random_state": 42,
+                "objective": "binary",
+                "is_unbalance": False,          # Set to False if using scale_pos_weight
+                "scale_pos_weight": 5.0,        # Key: Penalizes missing class 1 (Evaded)
+                "boosting_type": "gbdt",
         }
 
         svc_params = {
@@ -551,15 +570,21 @@ class EvasionModel:
         }
 
         rf_params = {
-            "n_estimators": 100,
-            "criterion": "gini",
-            "max_depth": None,
-            "min_samples_split": 2,
+            "n_estimators": 500,               # Increase for more robust bagging
+            "criterion": "gini",               # "gini" or "entropy" - both work, stick to gini
+            "max_depth": 10,                   # Constraint to prevent overfitting the majority class
+            "min_samples_split": 5,            # Increase slightly to improve generalization
+            "class_weight": "balanced_subsample", # Crucial: Adjusts weights in each bootstrap sample
             "random_state": 42,
         }
 
+        
+
         lr_params = {
-            "random_state": 42,
+            "C": 10, # Regularization strength
+            "l1_ratio":0 ,  # "penalty": "l2",   
+            "solver": "liblinear",               # Required to support 'l1' penalty
+            "random_state": 42
         }
 
         mlflow.log_param("model_type", "StackingClassifier")
@@ -584,11 +609,6 @@ class EvasionModel:
                 cv=stacking_cv,
             )
 
-        estimators = [
-            ("rf", RandomForestClassifier(**rf_params)),
-            ("lgb", LGBMClassifier(**lgb_params)),
-            ("svm", make_pipeline(StandardScaler(), SVC(**svc_params))),
-        ]
 
         # --- Outer CV score, grouped by student. ---
         #

@@ -12,6 +12,9 @@ import pandas as pd
 import yaml
 from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
 from sklearn.metrics import (
+    fbeta_score,
+    average_precision_score,
+    PrecisionRecallDisplay,
     ConfusionMatrixDisplay,
     RocCurveDisplay,
     accuracy_score,
@@ -272,13 +275,15 @@ class EvasionModel:
         return lgb
 
     @staticmethod
-    def results(model, y_test, X_test, save_path=None, prefix=""):
+    def results(model, y_test, X_test, save_path=None, prefix="", beta=2):
         """
         Prints classification metrics (including ROC-AUC) and shows/saves
         the confusion matrix.
         """
         y_pred = model.predict(X_test)
         cm = confusion_matrix(y_test, y_pred)
+
+        y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
 
         print("\n--- Métricas Detalhadas ---")
         print(
@@ -290,19 +295,29 @@ class EvasionModel:
         prec = precision_score(y_test, y_pred)
         rec = recall_score(y_test, y_pred)
         f1 = f1_score(y_test, y_pred)
+        fbeta = fbeta_score(y_test, y_pred, beta=beta)
 
-        # Log fundamental metrics to MLflow
+        print(f"F_beta: {fbeta}") 
+
+    
+        auc = None
+        auprc = None
+        roc_auc = None
+        if y_proba is not None:
+            auprc = average_precision_score(y_test, y_proba) # Implementation of AUPRC
+            roc_auc = roc_auc_score(y_test, y_proba)
+            print(f"AUPRC: {auprc:.4f}")
+            print(f"ROC-AUC: {roc_auc:.4f}")
+
+            # Log fundamental metrics to MLflow
         mlflow.log_metric(f"{prefix}accuracy", acc)
         mlflow.log_metric(f"{prefix}precision", prec)
         mlflow.log_metric(f"{prefix}recall", rec)
         mlflow.log_metric(f"{prefix}f1_score", f1)
+        mlflow.log_metric(f"{prefix}fbeta_{beta}", fbeta)
+        if auprc is not None: mlflow.log_metric(f"{prefix}auprc", auprc)
+        if roc_auc is not None: mlflow.log_metric(f"{prefix}roc_auc", roc_auc)
 
-        auc = None
-        if hasattr(model, "predict_proba"):
-            y_proba = model.predict_proba(X_test)[:, 1]
-            auc = roc_auc_score(y_test, y_proba)
-            print(f"ROC-AUC: {auc:.4f}")
-            mlflow.log_metric(f"{prefix}roc_auc", auc)
 
         disp = ConfusionMatrixDisplay(
             confusion_matrix=cm, display_labels=["Formado", "Evadido"]
@@ -559,6 +574,7 @@ class EvasionModel:
                     gamma="scale",
                     probability=True,
                     random_state=42,
+                    # class_weight={0: 1, 1: 5}
                 ),
             )
 
