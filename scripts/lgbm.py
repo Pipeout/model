@@ -4,12 +4,11 @@ import re
 import time
 import unicodedata
 from pathlib import Path
-
 import matplotlib.pyplot as plt
-import mlflow.sklearn
 import numpy as np
 import pandas as pd
 import yaml
+from lightgbm import LGBMClassifier
 from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
@@ -26,9 +25,7 @@ from sklearn.model_selection import (
     GroupKFold,
     GroupShuffleSplit,
 )
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
+
 
 import mlflow
 
@@ -514,11 +511,11 @@ class EvasionModel:
         self.plot_calibration_curve(calibrated_model, y_test, X_test)
 
         return model, calibrated_model, metrics
-    
-    def run_svm(
+
+    def run_lightgbm(
         self,
         csv_path,
-        save_path="svm_confusion_matrix.png",
+        save_path="lgbm_confusion_matrix.png",
         calib_size=0.2,
     ):
         (
@@ -536,6 +533,14 @@ class EvasionModel:
         X_calib = X_calib.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
+        params = {
+            "n_estimators": 1000,
+            "learning_rate": 0.01,
+            "max_depth": 6,
+            "verbose": -1,
+            "random_state": 42,
+        }
+
         gkf = GroupKFold(n_splits=10)
 
         auc_scores = []
@@ -551,23 +556,14 @@ class EvasionModel:
             X_fold_val = X_train.iloc[val_idx]
             y_fold_val = y_train.iloc[val_idx]
 
-            svm = make_pipeline(
-                StandardScaler(),
-                SVC(
-                    C=1.0,
-                    kernel="rbf",
-                    gamma="scale",
-                    probability=True,
-                    random_state=42,
-                ),
-            )
+            lgb = LGBMClassifier(**params)
 
-            svm.fit(
+            lgb.fit(
                 X_fold_train,
                 y_fold_train,
             )
 
-            y_proba = svm.predict_proba(
+            y_proba = lgb.predict_proba(
                 X_fold_val
             )[:, 1]
 
@@ -580,59 +576,47 @@ class EvasionModel:
             f"(+/- {np.std(auc_scores):.4f})"
         )
 
-        svm = make_pipeline(
-            StandardScaler(),
-            SVC(
-                C=1.0,
-                kernel="rbf",
-                gamma="scale",
-                probability=True,
-                random_state=42,
-            ),
-        )
+        lgb = LGBMClassifier(**params)
 
-        svm.fit(
+        lgb.fit(
             X_train,
             y_train,
         )
 
         metrics = self.results(
-            svm,
+            lgb,
             y_test,
             X_test,
             save_path=save_path,
         )
 
         self.plot_roc_curve(
-            svm,
+            lgb,
             y_test,
             X_test,
         )
 
-        calibrated_svm = self.calibrate_model(
-            svm,
+        calibrated_lgb = self.calibrate_model(
+            lgb,
             X_calib,
             y_calib,
         )
 
-        print("\n--- Calibrated SVM results ---")
+        print("\n--- Calibrated LightGBM results ---")
 
         self.results(
-            calibrated_svm,
+            calibrated_lgb,
             y_test,
             X_test,
         )
 
         self.plot_calibration_curve(
-            calibrated_svm,
+            calibrated_lgb,
             y_test,
             X_test,
         )
 
-        return svm, calibrated_svm, metrics
-
-    
-
+        return lgb, calibrated_lgb, metrics
     # ------------------------------------------------------------------ #
     # Inference / risk-scoring for currently active students
     # ------------------------------------------------------------------ #
@@ -821,8 +805,7 @@ if __name__ == "__main__":
 
         model_runner = EvasionModel()
         dfs = model_runner.load_config()
-        # csv_path = dfs["TRAINING_DATASET"] 
-        csv_path = 'training_ciencia_da_computacao_ativos_2017_2025_1.csv'
+        csv_path = dfs["TRAINING_DATASET"]
         results_path = dfs["RESULTS_PATH"]
 
         training_hash = run.info.run_id
@@ -832,12 +815,12 @@ if __name__ == "__main__":
         mlflow.set_tag("version", "v1.0")
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
-        # Train the svm (with calibration + ROC-AUC reporting).
-        clf, calibrated_clf, metrics = model_runner.run_svm(csv_path)
+        # Train the stacking ensemble (with calibration + ROC-AUC reporting).
+        clf, calibrated_clf, metrics = model_runner.run_lightgbm(csv_path)
 
         # Recompute X_train (without the calibration carve-out) purely as the
         # column-alignment reference for inference, matching what `clf` was
-        # actually fit on. (run_svm already fit `clf` on this same
+        # actually fit on. (run_ensemble already fit `clf` on this same
         # X_train internally; we just need its columns here.)
         X_train_for_alignment, _X_test, _y_train, _y_test, _gtr, _gte = (
             model_runner.prepare_data(csv_path, calib_size=0.0, log_params=False)

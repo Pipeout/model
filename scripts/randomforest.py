@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 import yaml
 from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
     RocCurveDisplay,
@@ -261,15 +263,6 @@ class EvasionModel:
         )
         return X_train_encoded, X_test_encoded
 
-    # ------------------------------------------------------------------ #
-    # Modeling helpers
-    # ------------------------------------------------------------------ #
-    @staticmethod
-    def model_fitting(X_train, y_train, params):
-        lgb = LGBMClassifier(**params)
-        lgb.fit(X_train, y_train)
-        print(type(lgb))
-        return lgb
 
     @staticmethod
     def results(model, y_test, X_test, save_path=None, prefix=""):
@@ -514,11 +507,11 @@ class EvasionModel:
         self.plot_calibration_curve(calibrated_model, y_test, X_test)
 
         return model, calibrated_model, metrics
-    
-    def run_svm(
+
+    def run_random_forest(
         self,
         csv_path,
-        save_path="svm_confusion_matrix.png",
+        save_path="rf_confusion_matrix.png",
         calib_size=0.2,
     ):
         (
@@ -536,8 +529,15 @@ class EvasionModel:
         X_calib = X_calib.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-        gkf = GroupKFold(n_splits=10)
+        rf = RandomForestClassifier(
+            n_estimators=100,
+            criterion="gini",
+            max_depth=None,
+            min_samples_split=2,
+            random_state=42,
+        )
 
+        gkf = GroupKFold(n_splits=10)
         auc_scores = []
 
         for train_idx, val_idx in gkf.split(
@@ -551,25 +551,17 @@ class EvasionModel:
             X_fold_val = X_train.iloc[val_idx]
             y_fold_val = y_train.iloc[val_idx]
 
-            svm = make_pipeline(
-                StandardScaler(),
-                SVC(
-                    C=1.0,
-                    kernel="rbf",
-                    gamma="scale",
-                    probability=True,
-                    random_state=42,
-                ),
+            rf_fold = RandomForestClassifier(
+                n_estimators=100,
+                criterion="gini",
+                max_depth=None,
+                min_samples_split=2,
+                random_state=42,
             )
 
-            svm.fit(
-                X_fold_train,
-                y_fold_train,
-            )
+            rf_fold.fit(X_fold_train, y_fold_train)
 
-            y_proba = svm.predict_proba(
-                X_fold_val
-            )[:, 1]
+            y_proba = rf_fold.predict_proba(X_fold_val)[:, 1]
 
             auc_scores.append(
                 roc_auc_score(y_fold_val, y_proba)
@@ -580,59 +572,42 @@ class EvasionModel:
             f"(+/- {np.std(auc_scores):.4f})"
         )
 
-        svm = make_pipeline(
-            StandardScaler(),
-            SVC(
-                C=1.0,
-                kernel="rbf",
-                gamma="scale",
-                probability=True,
-                random_state=42,
-            ),
-        )
-
-        svm.fit(
-            X_train,
-            y_train,
-        )
+        rf.fit(X_train, y_train)
 
         metrics = self.results(
-            svm,
+            rf,
             y_test,
             X_test,
             save_path=save_path,
         )
 
         self.plot_roc_curve(
-            svm,
+            rf,
             y_test,
             X_test,
         )
 
-        calibrated_svm = self.calibrate_model(
-            svm,
+        calibrated_rf = self.calibrate_model(
+            rf,
             X_calib,
             y_calib,
         )
 
-        print("\n--- Calibrated SVM results ---")
+        print("\n--- Calibrated RF results ---")
 
         self.results(
-            calibrated_svm,
+            calibrated_rf,
             y_test,
             X_test,
         )
 
         self.plot_calibration_curve(
-            calibrated_svm,
+            calibrated_rf,
             y_test,
             X_test,
         )
 
-        return svm, calibrated_svm, metrics
-
-    
-
+        return rf, calibrated_rf, metrics
     # ------------------------------------------------------------------ #
     # Inference / risk-scoring for currently active students
     # ------------------------------------------------------------------ #
@@ -821,8 +796,7 @@ if __name__ == "__main__":
 
         model_runner = EvasionModel()
         dfs = model_runner.load_config()
-        # csv_path = dfs["TRAINING_DATASET"] 
-        csv_path = 'training_ciencia_da_computacao_ativos_2017_2025_1.csv'
+        csv_path = dfs["TRAINING_DATASET"]
         results_path = dfs["RESULTS_PATH"]
 
         training_hash = run.info.run_id
@@ -832,12 +806,12 @@ if __name__ == "__main__":
         mlflow.set_tag("version", "v1.0")
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
-        # Train the svm (with calibration + ROC-AUC reporting).
-        clf, calibrated_clf, metrics = model_runner.run_svm(csv_path)
+        # Train the stacking ensemble (with calibration + ROC-AUC reporting).
+        clf, calibrated_clf, metrics = model_runner.run_random_forest(csv_path)
 
         # Recompute X_train (without the calibration carve-out) purely as the
         # column-alignment reference for inference, matching what `clf` was
-        # actually fit on. (run_svm already fit `clf` on this same
+        # actually fit on. (run_ensemble already fit `clf` on this same
         # X_train internally; we just need its columns here.)
         X_train_for_alignment, _X_test, _y_train, _y_test, _gtr, _gte = (
             model_runner.prepare_data(csv_path, calib_size=0.0, log_params=False)

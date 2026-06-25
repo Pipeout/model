@@ -3,3 +3,11 @@ __pycache__/
 .venv
 .aws
 .dockerignore
+*.csv
+*.png
+env
+scripts/results
+venv/
+scripts/testing.py
+mlruns/
+.mlruns/

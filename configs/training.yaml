@@ -2,7 +2,5 @@ CURRENT_DATASET: "CIENCIA_DA_COMPUTACAO"
 
 DATASETS:
   CIENCIA_DA_COMPUTACAO:
-    TRAINING_DATASET: s3://pipeout-database/datasets/ciencia_da_computacao/treino/ciencia_da_computacao_2017_1_2025_1_treino.csv
-    EVADED_DATASET: s3://pipeout-database/datasets/ciencia_da_computacao/inativos/ciencia_da_computacao_inativos_2017_2025_1.csv
-    ACTIVE_DATASET: s3://pipeout-database/datasets/ciencia_da_computacao/ativos/ciencia_da_computacao_ativos_2017_2025_1.csv
-    HISTORY_DATASET: s3://pipeout-database/datasets/ciencia_da_computacao/historico/ciencia_da_computacao_historico_escolar_2017_2025_1.csv
+    TRAINING_DATASET: s3://pipeout-database/datasets/ciencia_da_computacao/training/training_ciencia_da_computacao_2017_2025_1.csv
+    RESULTS_PATH: s3://pipeout-database/datasets/ciencia_da_computacao/results
