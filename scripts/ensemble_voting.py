@@ -6,22 +6,24 @@ import unicodedata
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import mlflow
 import mlflow.sklearn
 import numpy as np
 import pandas as pd
 import yaml
+from sklearn.ensemble import VotingClassifier
+from lightgbm import LGBMClassifier
 from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
-    PrecisionRecallDisplay,
+    fbeta_score,
+    average_precision_score,
     RocCurveDisplay,
     accuracy_score,
-    average_precision_score,
     classification_report,
     confusion_matrix,
     f1_score,
-    fbeta_score,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -33,6 +35,8 @@ from sklearn.model_selection import (
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
+
+import mlflow
 
 
 class EvasionModel:
@@ -263,8 +267,18 @@ class EvasionModel:
         )
         return X_train_encoded, X_test_encoded
 
+    # ------------------------------------------------------------------ #
+    # Modeling helpers
+    # ------------------------------------------------------------------ #
     @staticmethod
-    def results(model, y_test, X_test, save_path=None, prefix="", beta=2):
+    def model_fitting(X_train, y_train, params):
+        lgb = LGBMClassifier(**params)
+        lgb.fit(X_train, y_train)
+        print(type(lgb))
+        return lgb
+
+    @staticmethod
+    def results(model, y_test, X_test, save_path=None, prefix="", beta=3):
         """
         Prints classification metrics (including ROC-AUC) and shows/saves
         the confusion matrix.
@@ -272,11 +286,7 @@ class EvasionModel:
         y_pred = model.predict(X_test)
         cm = confusion_matrix(y_test, y_pred)
 
-        y_proba = (
-            model.predict_proba(X_test)[:, 1]
-            if hasattr(model, "predict_proba")
-            else None
-        )
+        y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
 
         print("\n--- Métricas Detalhadas ---")
         print(
@@ -290,13 +300,14 @@ class EvasionModel:
         f1 = f1_score(y_test, y_pred)
         fbeta = fbeta_score(y_test, y_pred, beta=beta)
 
-        print(f"F_beta: {fbeta}")
+        print(f"F_beta: {fbeta}") 
 
+    
         auc = None
         auprc = None
         roc_auc = None
         if y_proba is not None:
-            auprc = average_precision_score(y_test, y_proba)  # Implementation of AUPRC
+            auprc = average_precision_score(y_test, y_proba) # Implementation of AUPRC
             roc_auc = roc_auc_score(y_test, y_proba)
             print(f"AUPRC: {auprc:.4f}")
             print(f"ROC-AUC: {roc_auc:.4f}")
@@ -307,10 +318,9 @@ class EvasionModel:
         mlflow.log_metric(f"{prefix}recall", rec)
         mlflow.log_metric(f"{prefix}f1_score", f1)
         mlflow.log_metric(f"{prefix}fbeta_{beta}", fbeta)
-        if auprc is not None:
-            mlflow.log_metric(f"{prefix}auprc", auprc)
-        if roc_auc is not None:
-            mlflow.log_metric(f"{prefix}roc_auc", roc_auc)
+        if auprc is not None: mlflow.log_metric(f"{prefix}auprc", auprc)
+        if roc_auc is not None: mlflow.log_metric(f"{prefix}roc_auc", roc_auc)
+
 
         disp = ConfusionMatrixDisplay(
             confusion_matrix=cm, display_labels=["Formado", "Evadido"]
@@ -332,6 +342,7 @@ class EvasionModel:
             "f1": f1,
             "roc_auc": auc,
         }
+
 
     @staticmethod
     def plot_roc_curve(model, y_test, X_test, save_path=None):
@@ -399,7 +410,7 @@ class EvasionModel:
     # ------------------------------------------------------------------ #
     # Shared data preparation (train/test/calibration)
     # ------------------------------------------------------------------ #
-    def prepare_data(self, csv_path, calib_size=0.0, log_params=True):
+    def prepare_data(self, csv_path, calib_size=0.0, log_params = True):
         """
         Loads the CSV, filters to non-active students, drops unused
         columns, splits (grouped by student id), optionally carves a
@@ -428,6 +439,7 @@ class EvasionModel:
         if log_params:
             mlflow.log_param("total_dataset_rows", len(df_base))
             mlflow.log_param("test_size", len(X_test))
+
 
         X_calib = None
         y_calib = None
@@ -460,6 +472,7 @@ class EvasionModel:
         X_train[cat_features] = X_train[cat_features].apply(self.clean_feature_values)
         X_test[cat_features] = X_test[cat_features].apply(self.clean_feature_values)
 
+
         if X_calib is not None:
             X_calib = X_calib.copy()
             X_calib[cat_features] = X_calib[cat_features].apply(
@@ -488,12 +501,17 @@ class EvasionModel:
 
         return X_train_enc, X_test_enc, y_train, y_test, groups_train, groups_test
 
-    def run_svm(
-        self,
-        csv_path,
-        save_path="svm_confusion_matrix.png",
-        calib_size=0.2,
-    ):
+    # ------------------------------------------------------------------ #
+    # Pipelines
+    # ------------------------------------------------------------------ #
+    def run_single_model(self, csv_path, params=None, calib_size=0.2):
+        params = params or {
+            "n_estimators": 1000,
+            "learning_rate": 0.01,
+            "max_depth": 6,
+            "verbose": -1,
+        }
+
         (
             X_train,
             X_calib,
@@ -505,99 +523,113 @@ class EvasionModel:
             groups_test,
         ) = self.prepare_data(csv_path, calib_size=calib_size)
 
+        model = self.model_fitting(X_train, y_train, params)
+        metrics = self.results(model, y_test, X_test)
+        self.plot_roc_curve(model, y_test, X_test)
+
+        calibrated_model = self.calibrate_model(model, X_calib, y_calib)
+        print("\n--- Calibrated model results (test set) ---")
+        self.results(calibrated_model, y_test, X_test)
+        self.plot_calibration_curve(calibrated_model, y_test, X_test)
+
+        return model, calibrated_model, metrics
+
+    def run_ensemble(self, csv_path, save_path="confusion_matrix.png", calib_size=0.2):
+        (
+            X_train,
+            X_calib,
+            X_test,
+            y_train,
+            y_calib,
+            y_test,
+            groups_train,
+            groups_test,
+        ) = self.prepare_data(csv_path, calib_size=calib_size)
+
+        # ----------------------------
+        # Safety cleanup
+        # ----------------------------
         X_train = X_train.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_calib = X_calib.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-        gkf = GroupKFold(n_splits=10)
+        # ----------------------------
+        # Models
+        # ----------------------------
+        lgb_params = {
+            "n_estimators": 1500,
+            "learning_rate": 0.005,
+            "max_depth": 7,
+            "verbose": -1,
+            "random_state": 42,
+            "objective": "binary",
+            "is_unbalance": False,
+            "scale_pos_weight": 5.0,
+            "boosting_type": "gbdt",
+        }
 
-        auc_scores = []
+        svc_params = {
+            "C": 1.0,
+            "kernel": "rbf",
+            "gamma": "scale",
+            "probability": True,
+            "random_state": 42,
+        }
 
-        for train_idx, val_idx in gkf.split(
-            X_train,
-            y_train,
-            groups=groups_train,
-        ):
-            X_fold_train = X_train.iloc[train_idx]
-            y_fold_train = y_train.iloc[train_idx]
+        rf_params = {
+            "n_estimators": 500,
+            "criterion": "gini",
+            "max_depth": 10,
+            "min_samples_split": 5,
+            "class_weight": "balanced_subsample",
+            "random_state": 42,
+        }
 
-            X_fold_val = X_train.iloc[val_idx]
-            y_fold_val = y_train.iloc[val_idx]
+        mlflow.log_param("model_type", "VotingClassifier")
+        mlflow.log_param("base_estimators", "RandomForest, LightGBM, SVC")
+        mlflow.log_param("voting", "soft")
 
-            svm = make_pipeline(
-                StandardScaler(),
-                SVC(
-                    C=1.0,
-                    kernel="rbf",
-                    gamma="scale",
-                    probability=True,
-                    random_state=42,
-                    # class_weight={0: 1, 1: 5}
-                ),
+        # ----------------------------
+        # Voting model
+        # ----------------------------
+        def _build_voting_classifier():
+            estimators = [
+                ("rf", RandomForestClassifier(**rf_params)),
+                ("lgb", LGBMClassifier(**lgb_params)),
+                ("svm", make_pipeline(StandardScaler(), SVC(**svc_params))),
+            ]
+
+            return VotingClassifier(
+                estimators=estimators,
+                voting="soft",
+                weights=[2, 3, 1],
             )
 
-            svm.fit(
-                X_fold_train,
-                y_fold_train,
-            )
+        clf = _build_voting_classifier()
+        clf.fit(X_train, y_train)
 
-            y_proba = svm.predict_proba(X_fold_val)[:, 1]
+        # ----------------------------
+        # Evaluation
+        # ----------------------------
+        y_pred = clf.predict(X_test)
 
-            auc_scores.append(roc_auc_score(y_fold_val, y_proba))
+        print(classification_report(y_test, y_pred))
 
-        print(f"CV ROC-AUC: {np.mean(auc_scores):.4f} (+/- {np.std(auc_scores):.4f})")
+        metrics = self.results(clf, y_test, X_test, save_path=save_path)
+        self.plot_roc_curve(clf, y_test, X_test)
 
-        svm = make_pipeline(
-            StandardScaler(),
-            SVC(
-                C=1.0,
-                kernel="rbf",
-                gamma="scale",
-                probability=True,
-                random_state=42,
-            ),
-        )
+        # ----------------------------
+        # Calibration
+        # ----------------------------
+        calibrated_clf = self.calibrate_model(clf, X_calib, y_calib)
 
-        svm.fit(
-            X_train,
-            y_train,
-        )
+        print("\n--- Calibrated ensemble results ---")
+        self.results(calibrated_clf, y_test, X_test)
+        self.plot_calibration_curve(calibrated_clf, y_test, X_test)
 
-        metrics = self.results(
-            svm,
-            y_test,
-            X_test,
-            save_path=save_path,
-        )
+        mlflow.sklearn.log_model(calibrated_clf, "calibrated_voting_model")
 
-        self.plot_roc_curve(
-            svm,
-            y_test,
-            X_test,
-        )
-
-        calibrated_svm = self.calibrate_model(
-            svm,
-            X_calib,
-            y_calib,
-        )
-
-        print("\n--- Calibrated SVM results ---")
-
-        self.results(
-            calibrated_svm,
-            y_test,
-            X_test,
-        )
-
-        self.plot_calibration_curve(
-            calibrated_svm,
-            y_test,
-            X_test,
-        )
-
-        return svm, calibrated_svm, metrics
-
+        return clf, calibrated_clf, metrics
     # ------------------------------------------------------------------ #
     # Inference / risk-scoring for currently active students
     # ------------------------------------------------------------------ #
@@ -730,7 +762,7 @@ class EvasionModel:
         model,
         training_hash: str,
         X_train: pd.DataFrame,
-        output_dir: str,
+        output_dir: str ,        
     ) -> pd.DataFrame:
         """
         Full inference pipeline for currently active students:
@@ -767,6 +799,7 @@ class EvasionModel:
         print("\n--- Top 10 students by evasion risk ---")
         print(df_ranking.head(10))
 
+
         output_filename = f"{training_hash}_risco_evasao.csv"
 
         out_path = f"{output_dir}/{output_filename}"
@@ -774,7 +807,7 @@ class EvasionModel:
         print(f"\nRisk ranking written to: {out_path}")
 
         mlflow.log_param("risk scoring filepath", out_path)
-        return
+        return 
 
 
 if __name__ == "__main__":
@@ -785,8 +818,7 @@ if __name__ == "__main__":
 
         model_runner = EvasionModel()
         dfs = model_runner.load_config()
-        # csv_path = dfs["TRAINING_DATASET"]
-        csv_path = "training_ciencia_da_computacao_ativos_2017_2025_1.csv"
+        csv_path = dfs["TRAINING_DATASET"]
         results_path = dfs["RESULTS_PATH"]
 
         training_hash = run.info.run_id
@@ -796,12 +828,12 @@ if __name__ == "__main__":
         mlflow.set_tag("version", "v1.0")
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
-        # Train the svm (with calibration + ROC-AUC reporting).
-        clf, calibrated_clf, metrics = model_runner.run_svm(csv_path)
+        # Train the stacking ensemble (with calibration + ROC-AUC reporting).
+        clf, calibrated_clf, metrics = model_runner.run_ensemble(csv_path)
 
         # Recompute X_train (without the calibration carve-out) purely as the
         # column-alignment reference for inference, matching what `clf` was
-        # actually fit on. (run_svm already fit `clf` on this same
+        # actually fit on. (run_ensemble already fit `clf` on this same
         # X_train internally; we just need its columns here.)
         X_train_for_alignment, _X_test, _y_train, _y_test, _gtr, _gte = (
             model_runner.prepare_data(csv_path, calib_size=0.0, log_params=False)
@@ -815,7 +847,7 @@ if __name__ == "__main__":
             X_train=X_train_for_alignment,
             output_dir=results_path,
         )
-
+        
         mlflow.log_param("training_hash", training_hash)
 
         total_time = time.time() - start_time

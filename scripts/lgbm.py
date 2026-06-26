@@ -20,6 +20,8 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     roc_auc_score,
+    average_precision_score,
+    fbeta_score
 )
 from sklearn.model_selection import (
     GroupKFold,
@@ -269,13 +271,15 @@ class EvasionModel:
         return lgb
 
     @staticmethod
-    def results(model, y_test, X_test, save_path=None, prefix=""):
+    def results(model, y_test, X_test, save_path=None, prefix="", beta=2):
         """
         Prints classification metrics (including ROC-AUC) and shows/saves
         the confusion matrix.
         """
         y_pred = model.predict(X_test)
         cm = confusion_matrix(y_test, y_pred)
+
+        y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
 
         print("\n--- Métricas Detalhadas ---")
         print(
@@ -287,19 +291,29 @@ class EvasionModel:
         prec = precision_score(y_test, y_pred)
         rec = recall_score(y_test, y_pred)
         f1 = f1_score(y_test, y_pred)
+        fbeta = fbeta_score(y_test, y_pred, beta=beta)
 
-        # Log fundamental metrics to MLflow
+        print(f"F_{beta}: {fbeta}") 
+
+    
+        auc = None
+        auprc = None
+        roc_auc = None
+        if y_proba is not None:
+            auprc = average_precision_score(y_test, y_proba) # Implementation of AUPRC
+            roc_auc = roc_auc_score(y_test, y_proba)
+            print(f"AUPRC: {auprc:.4f}")
+            print(f"ROC-AUC: {roc_auc:.4f}")
+
+            # Log fundamental metrics to MLflow
         mlflow.log_metric(f"{prefix}accuracy", acc)
         mlflow.log_metric(f"{prefix}precision", prec)
         mlflow.log_metric(f"{prefix}recall", rec)
         mlflow.log_metric(f"{prefix}f1_score", f1)
+        mlflow.log_metric(f"{prefix}fbeta_{beta}", fbeta)
+        if auprc is not None: mlflow.log_metric(f"{prefix}auprc", auprc)
+        if roc_auc is not None: mlflow.log_metric(f"{prefix}roc_auc", roc_auc)
 
-        auc = None
-        if hasattr(model, "predict_proba"):
-            y_proba = model.predict_proba(X_test)[:, 1]
-            auc = roc_auc_score(y_test, y_proba)
-            print(f"ROC-AUC: {auc:.4f}")
-            mlflow.log_metric(f"{prefix}roc_auc", auc)
 
         disp = ConfusionMatrixDisplay(
             confusion_matrix=cm, display_labels=["Formado", "Evadido"]
@@ -477,40 +491,7 @@ class EvasionModel:
                 groups_test,
             )
 
-        return X_train_enc, X_test_enc, y_train, y_test, groups_train, groups_test
-
-    # ------------------------------------------------------------------ #
-    # Pipelines
-    # ------------------------------------------------------------------ #
-    def run_single_model(self, csv_path, params=None, calib_size=0.2):
-        params = params or {
-            "n_estimators": 1000,
-            "learning_rate": 0.01,
-            "max_depth": 6,
-            "verbose": -1,
-        }
-
-        (
-            X_train,
-            X_calib,
-            X_test,
-            y_train,
-            y_calib,
-            y_test,
-            groups_train,
-            groups_test,
-        ) = self.prepare_data(csv_path, calib_size=calib_size)
-
-        model = self.model_fitting(X_train, y_train, params)
-        metrics = self.results(model, y_test, X_test)
-        self.plot_roc_curve(model, y_test, X_test)
-
-        calibrated_model = self.calibrate_model(model, X_calib, y_calib)
-        print("\n--- Calibrated model results (test set) ---")
-        self.results(calibrated_model, y_test, X_test)
-        self.plot_calibration_curve(calibrated_model, y_test, X_test)
-
-        return model, calibrated_model, metrics
+        return X_train_enc, X_test_enc, y_train, y_test, groups_train, groups_test    
 
     def run_lightgbm(
         self,
@@ -534,11 +515,15 @@ class EvasionModel:
         X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
         params = {
-            "n_estimators": 1000,
-            "learning_rate": 0.01,
-            "max_depth": 6,
+            "n_estimators": 1500,           # Increase to allow more learning cycles
+            "learning_rate": 0.005,         # Decrease to make learning more stable/cautious
+            "max_depth": 7,                 # Slight increase to capture complex minority patterns
             "verbose": -1,
             "random_state": 42,
+            "objective": "binary",
+            "is_unbalance": False,          # Set to False if using scale_pos_weight
+            "scale_pos_weight": 0.86,        # Key: Penalizes missing class 1 (Evaded)
+            "boosting_type": "gbdt",
         }
 
         gkf = GroupKFold(n_splits=10)
@@ -617,6 +602,9 @@ class EvasionModel:
         )
 
         return lgb, calibrated_lgb, metrics
+    
+
+    
     # ------------------------------------------------------------------ #
     # Inference / risk-scoring for currently active students
     # ------------------------------------------------------------------ #
@@ -800,7 +788,7 @@ class EvasionModel:
 if __name__ == "__main__":
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
     mlflow.set_experiment("evasion_risk_scoring_v1")
-    with mlflow.start_run(run_name="Stacked_Ensemble") as run:
+    with mlflow.start_run(run_name="LightGBM Calibrated") as run:
         start_time = time.time()
 
         model_runner = EvasionModel()

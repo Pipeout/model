@@ -7,14 +7,13 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import mlflow
-import mlflow.sklearn
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 import yaml
 from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
-    PrecisionRecallDisplay,
     RocCurveDisplay,
     accuracy_score,
     average_precision_score,
@@ -30,9 +29,6 @@ from sklearn.model_selection import (
     GroupKFold,
     GroupShuffleSplit,
 )
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
 
 
 class EvasionModel:
@@ -290,7 +286,7 @@ class EvasionModel:
         f1 = f1_score(y_test, y_pred)
         fbeta = fbeta_score(y_test, y_pred, beta=beta)
 
-        print(f"F_beta: {fbeta}")
+        print(f"F_{beta}: {fbeta}")
 
         auc = None
         auprc = None
@@ -488,10 +484,10 @@ class EvasionModel:
 
         return X_train_enc, X_test_enc, y_train, y_test, groups_train, groups_test
 
-    def run_svm(
+    def run_lightgbm(
         self,
         csv_path,
-        save_path="svm_confusion_matrix.png",
+        save_path="lgbm_confusion_matrix.png",
         calib_size=0.2,
     ):
         (
@@ -509,6 +505,24 @@ class EvasionModel:
         X_calib = X_calib.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
+        params = {
+            "n_estimators": 1500,
+            "learning_rate": 0.005,
+            "max_depth": 7,
+            "min_child_weight": 1,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "gamma": 0,
+            "reg_alpha": 0,
+            "reg_lambda": 1,
+            "objective": "binary:logistic",
+            "scale_pos_weight": 0.86,
+            "random_state": 42,
+            "tree_method": "hist",
+            "eval_metric": "logloss",
+            "verbosity": 0,
+        }
+
         gkf = GroupKFold(n_splits=10)
 
         auc_scores = []
@@ -524,79 +538,60 @@ class EvasionModel:
             X_fold_val = X_train.iloc[val_idx]
             y_fold_val = y_train.iloc[val_idx]
 
-            svm = make_pipeline(
-                StandardScaler(),
-                SVC(
-                    C=1.0,
-                    kernel="rbf",
-                    gamma="scale",
-                    probability=True,
-                    random_state=42,
-                    # class_weight={0: 1, 1: 5}
-                ),
-            )
+            xg = xgb.XGBClassifier(**params)
 
-            svm.fit(
+            xg.fit(
                 X_fold_train,
                 y_fold_train,
             )
 
-            y_proba = svm.predict_proba(X_fold_val)[:, 1]
+            y_proba = xg.predict_proba(X_fold_val)[:, 1]
 
             auc_scores.append(roc_auc_score(y_fold_val, y_proba))
 
         print(f"CV ROC-AUC: {np.mean(auc_scores):.4f} (+/- {np.std(auc_scores):.4f})")
 
-        svm = make_pipeline(
-            StandardScaler(),
-            SVC(
-                C=1.0,
-                kernel="rbf",
-                gamma="scale",
-                probability=True,
-                random_state=42,
-            ),
-        )
+        xg = xgb.XGBClassifier(**params)
 
-        svm.fit(
+        xg.fit(
             X_train,
             y_train,
         )
 
         metrics = self.results(
-            svm,
+            xg,
             y_test,
             X_test,
             save_path=save_path,
         )
 
         self.plot_roc_curve(
-            svm,
+            xg,
             y_test,
             X_test,
         )
 
-        calibrated_svm = self.calibrate_model(
-            svm,
+        calibrated_xgb = self.calibrate_model(
+            xg,
             X_calib,
             y_calib,
         )
 
-        print("\n--- Calibrated SVM results ---")
+        print("\n--- Calibrated XGBoost results ---")
 
         self.results(
-            calibrated_svm,
+            calibrated_xgb,
             y_test,
             X_test,
         )
 
         self.plot_calibration_curve(
-            calibrated_svm,
+            calibrated_xgb,
             y_test,
             X_test,
         )
 
-        return svm, calibrated_svm, metrics
+        return xg, calibrated_xgb, metrics
 
     # ------------------------------------------------------------------ #
     # Inference / risk-scoring for currently active students
@@ -780,13 +775,12 @@ class EvasionModel:
 if __name__ == "__main__":
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
     mlflow.set_experiment("evasion_risk_scoring_v1")
-    with mlflow.start_run(run_name="Stacked_Ensemble") as run:
+    with mlflow.start_run(run_name="LightGBM Calibrated") as run:
         start_time = time.time()
 
         model_runner = EvasionModel()
         dfs = model_runner.load_config()
-        # csv_path = dfs["TRAINING_DATASET"]
-        csv_path = "training_ciencia_da_computacao_ativos_2017_2025_1.csv"
+        csv_path = dfs["TRAINING_DATASET"]
         results_path = dfs["RESULTS_PATH"]
 
         training_hash = run.info.run_id
@@ -796,12 +790,12 @@ if __name__ == "__main__":
         mlflow.set_tag("version", "v1.0")
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
-        # Train the svm (with calibration + ROC-AUC reporting).
-        clf, calibrated_clf, metrics = model_runner.run_svm(csv_path)
+        # Train the stacking ensemble (with calibration + ROC-AUC reporting).
+        clf, calibrated_clf, metrics = model_runner.run_lightgbm(csv_path)
 
         # Recompute X_train (without the calibration carve-out) purely as the
         # column-alignment reference for inference, matching what `clf` was
-        # actually fit on. (run_svm already fit `clf` on this same
+        # actually fit on. (run_ensemble already fit `clf` on this same
         # X_train internally; we just need its columns here.)
         X_train_for_alignment, _X_test, _y_train, _y_test, _gtr, _gte = (
             model_runner.prepare_data(csv_path, calib_size=0.0, log_params=False)

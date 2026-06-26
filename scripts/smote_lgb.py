@@ -6,25 +6,25 @@ import unicodedata
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import mlflow
 import mlflow.sklearn
 import numpy as np
 import pandas as pd
 import yaml
-from scripts.lgbm import LGBMClassifier
+from imblearn.over_sampling import SMOTE
 
 # Adições vitais para lidar com SMOTE sem vazamento de dados
 from imblearn.pipeline import Pipeline as ImbPipeline
-from imblearn.over_sampling import SMOTE
-
-from sklearn.ensemble import RandomForestClassifier, StackingClassifier
-from sklearn.linear_model import LogisticRegression
+from lgbm import LGBMClassifier
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
     RocCurveDisplay,
     accuracy_score,
+    average_precision_score,
     classification_report,
     confusion_matrix,
     f1_score,
+    fbeta_score,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -33,10 +33,7 @@ from sklearn.model_selection import (
     GroupKFold,
     GroupShuffleSplit,
 )
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
 
-import mlflow
 
 class EvasionModel:
     ACTIVE_STATUSES = [
@@ -169,7 +166,7 @@ class EvasionModel:
         calib_size: float = 0.2,
         random_state: int = 42,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series, pd.Series]:
-        
+
         gss = GroupShuffleSplit(
             n_splits=2, train_size=1 - calib_size, random_state=random_state
         )
@@ -198,51 +195,86 @@ class EvasionModel:
         y_proba = model.predict_proba(X_val)[:, 1]
         best_thresh = 0.5
         best_score = 0.0
-        
+
         thresholds = np.linspace(0.1, 0.9, 81)
         for t in thresholds:
             y_pred = (y_proba >= t).astype(int)
-            score = f1_score(y_val, y_pred, average='macro')
+            score = f1_score(y_val, y_pred, average="macro")
             if score > best_score:
                 best_score = score
                 best_thresh = t
-                
+
         print(f"\n--- Limiar de Decisão Otimizado via F1 Macro: {best_thresh:.4f} ---")
         mlflow.log_param("optimal_threshold", best_thresh)
         return best_thresh
 
     @staticmethod
-    def results(model, y_test, X_test, save_path=None, prefix="", threshold=0.5):
-        y_proba = model.predict_proba(X_test)[:, 1]
-        y_pred = (y_proba >= threshold).astype(int)
-        
+    def results(
+        model, y_test, X_test, save_path=None, prefix="", beta=2, threshold=None
+    ):
+        """
+        Prints classification metrics (including ROC-AUC) and shows/saves
+        the confusion matrix.
+
+        threshold: if provided (and the model exposes predict_proba),
+        predictions are derived from y_proba >= threshold instead of the
+        model's internal default 0.5 cutoff. Without this, passing a
+        tuned threshold from optimize_threshold() has zero effect on the
+        reported metrics, since model.predict() always uses 0.5 internally.
+        """
+        has_proba = hasattr(model, "predict_proba")
+        y_proba = model.predict_proba(X_test)[:, 1] if has_proba else None
+
+        if threshold is not None:
+            if not has_proba:
+                raise ValueError(
+                    "threshold foi informado, mas o modelo não expõe predict_proba."
+                )
+            y_pred = (y_proba >= threshold).astype(int)
+        else:
+            y_pred = model.predict(X_test)
+
         cm = confusion_matrix(y_test, y_pred)
 
-        print(f"\n--- Métricas Detalhadas (Limiar: {threshold:.4f}) ---")
+        used_thresh = threshold if threshold is not None else 0.5
+        print(f"\n--- Métricas Detalhadas (Limiar: {used_thresh:.4f}) ---")
         print(
             classification_report(
                 y_test, y_pred, target_names=["Formado (0)", "Evadido (1)"]
             )
         )
         acc = accuracy_score(y_test, y_pred)
-        prec = precision_score(y_test, y_pred, zero_division=0)
+        prec = precision_score(y_test, y_pred)
         rec = recall_score(y_test, y_pred)
         f1 = f1_score(y_test, y_pred)
+        fbeta = fbeta_score(y_test, y_pred, beta=beta)
 
+        print(f"F_{beta}: {fbeta}")
+
+        auprc = None
+        roc_auc = None
+        if y_proba is not None:
+            auprc = average_precision_score(y_test, y_proba)  # Implementation of AUPRC
+            roc_auc = roc_auc_score(y_test, y_proba)
+            print(f"AUPRC: {auprc:.4f}")
+            print(f"ROC-AUC: {roc_auc:.4f}")
+
+            # Log fundamental metrics to MLflow
         mlflow.log_metric(f"{prefix}accuracy", acc)
         mlflow.log_metric(f"{prefix}precision", prec)
         mlflow.log_metric(f"{prefix}recall", rec)
         mlflow.log_metric(f"{prefix}f1_score", f1)
-
-        auc = roc_auc_score(y_test, y_proba)
-        print(f"ROC-AUC: {auc:.4f}")
-        mlflow.log_metric(f"{prefix}roc_auc", auc)
+        mlflow.log_metric(f"{prefix}fbeta_{beta}", fbeta)
+        if auprc is not None:
+            mlflow.log_metric(f"{prefix}auprc", auprc)
+        if roc_auc is not None:
+            mlflow.log_metric(f"{prefix}roc_auc", roc_auc)
 
         disp = ConfusionMatrixDisplay(
             confusion_matrix=cm, display_labels=["Formado", "Evadido"]
         )
         disp.plot(cmap="Blues")
-        plt.title(f"Matriz de Confusão (Limiar: {threshold:.2f})")
+        plt.title("Matriz de Confusão: Evasão Estudantil")
 
         if save_path:
             plt.savefig(save_path)
@@ -256,8 +288,10 @@ class EvasionModel:
             "precision": prec,
             "recall": rec,
             "f1": f1,
-            "roc_auc": auc,
-            "threshold": threshold
+            f"fbeta_{beta}": fbeta,
+            "auprc": auprc,
+            "roc_auc": roc_auc,
+            "threshold": used_thresh,
         }
 
     @staticmethod
@@ -280,7 +314,9 @@ class EvasionModel:
         df_base = self.selecting_active_students(df_base)
         df_base.drop(columns=self.EXTRA_COLUMNS_TO_DROP, inplace=True)
 
-        X_train, X_test, y_train, y_test, groups_train, groups_test = self.splitting(df_base)
+        X_train, X_test, y_train, y_test, groups_train, groups_test = self.splitting(
+            df_base
+        )
         if log_params:
             mlflow.log_param("total_dataset_rows", len(df_base))
             mlflow.log_param("test_size", len(X_test))
@@ -304,7 +340,7 @@ class EvasionModel:
         else:
             if log_params:
                 mlflow.log_param("calibration_split_size", 0)
-        
+
         if log_params:
             mlflow.log_param("final_train_size", len(X_train))
 
@@ -343,7 +379,14 @@ class EvasionModel:
 
         return X_train_enc, X_test_enc, y_train, y_test, groups_train, groups_test
 
-    def run_ensemble(self, csv_path, save_path="confusion_matrix.png", calib_size=0.2):
+    def run_lgbm_smote(
+        self, csv_path, save_path="confusion_matrix.png", calib_size=0.2
+    ):
+        """
+        Treina um único LightGBM dentro de um Pipeline imblearn com SMOTE
+        aplicado apenas nos folds/treino (sem vazamento), no lugar do
+        StackingClassifier anterior.
+        """
         (
             X_train,
             X_calib,
@@ -359,8 +402,8 @@ class EvasionModel:
         X_calib = X_calib.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-        # Retirado o class_weight="balanced" para evitar distorções colossais.
-        # O SMOTE já cuidará de equilibrar a proporção geométrica da base.
+        # Sem class_weight="balanced": o SMOTE já corrige a proporção das classes
+        # no treino. Combinar os dois normalmente sobre-corrige o desbalanceamento.
         lgb_params = {
             "n_estimators": 1000,
             "learning_rate": 0.01,
@@ -369,62 +412,19 @@ class EvasionModel:
             "random_state": 42,
         }
 
-        svc_params = {
-            "C": 1.0,
-            "kernel": "rbf",
-            "gamma": "scale",
-            "probability": True,
-            "random_state": 42,
-        }
+        mlflow.log_param("model_type", "LGBMClassifier_SMOTE")
+        mlflow.log_param(
+            "base_estimators", "LightGBM (single model with SMOTE pipeline)"
+        )
 
-        rf_params = {
-            "n_estimators": 100,
-            "criterion": "gini",
-            "max_depth": None,
-            "min_samples_split": 2,
-            "random_state": 42,
-        }
-
-        lr_params = {
-            "random_state": 42,
-        }
-
-        mlflow.log_param("model_type", "StackingClassifier_SMOTE")
-        mlflow.log_param("base_estimators", "RandomForest, LightGBM, SVC (All with SMOTE Pipelines)")
-        mlflow.log_param("final_estimator", "LogisticRegression")
-
-        def _build_stacking_classifier(stacking_cv):
-            # A integração com SMOTE requer encapsulamento total via imblearn Pipeline.
-            # O StandardScaler deve obrigatoriamente preceder o SMOTE no caso do SVM,
-            # pois o SMOTE se baseia em vizinhos mais próximos (KNN) para interpolação.
-            estimators_local = [
-                (
-                    "rf",
-                    ImbPipeline([
-                        ("smote", SMOTE(random_state=42)),
-                        ("rf", RandomForestClassifier(**rf_params))
-                    ])
-                ),
-                (
-                    "lgb",
-                    ImbPipeline([
-                        ("smote", SMOTE(random_state=42)),
-                        ("lgb", LGBMClassifier(**lgb_params))
-                    ])
-                ),
-                (
-                    "svm",
-                    ImbPipeline([
-                        ("scaler", StandardScaler()),
-                        ("smote", SMOTE(random_state=42)),
-                        ("svm", SVC(**svc_params))
-                    ])
-                ),
-            ]
-            return StackingClassifier(
-                estimators=estimators_local,
-                final_estimator=LogisticRegression(**lr_params),
-                cv=stacking_cv,
+        def _build_pipeline():
+            # SMOTE entra dentro do Pipeline para ser refeito a cada fold de CV,
+            # evitando que exemplos sintéticos contaminem o conjunto de validação.
+            return ImbPipeline(
+                [
+                    ("smote", SMOTE(random_state=42)),
+                    ("lgb", LGBMClassifier(**lgb_params)),
+                ]
             )
 
         gkf_scoring = GroupKFold(n_splits=10)
@@ -435,17 +435,11 @@ class EvasionModel:
         ):
             X_outer_train = X_train.iloc[outer_train_idx]
             y_outer_train = y_train.iloc[outer_train_idx]
-            groups_outer_train = groups_train.iloc[outer_train_idx]
 
             X_outer_val = X_train.iloc[outer_val_idx]
             y_outer_val = y_train.iloc[outer_val_idx]
 
-            inner_gkf = GroupKFold(n_splits=5)
-            inner_splits = list(
-                inner_gkf.split(X_outer_train, y_outer_train, groups=groups_outer_train)
-            )
-
-            fold_clf = _build_stacking_classifier(inner_splits)
+            fold_clf = _build_pipeline()
             fold_clf.fit(X_outer_train, y_outer_train)
 
             y_outer_val_proba = fold_clf.predict_proba(X_outer_val)[:, 1]
@@ -458,11 +452,7 @@ class EvasionModel:
         mlflow.log_metric("base_cv_roc_auc_mean", mean_cv_auc)
         mlflow.log_metric("base_cv_roc_auc_std", outer_scores.std())
 
-        gkf_stacking = GroupKFold(n_splits=5)
-        stacking_cv_splits = list(
-            gkf_stacking.split(X_train, y_train, groups=groups_train)
-        )
-        clf = _build_stacking_classifier(stacking_cv_splits)
+        clf = _build_pipeline()
         clf.fit(X_train, y_train)
 
         print("\n--- Resultados baseados no limiar cego padrão (0.5) ---")
@@ -470,10 +460,17 @@ class EvasionModel:
         self.plot_roc_curve(clf, y_test, X_test)
 
         opt_thresh = self.optimize_threshold(clf, X_calib, y_calib)
-        print("\n--- Resultados do Ensemble (SMOTE) com Limiar Otimizado ---")
-        metrics = self.results(clf, y_test, X_test, save_path=save_path, threshold=opt_thresh, prefix="tuned_")
+        print("\n--- Resultados do LightGBM (SMOTE) com Limiar Otimizado ---")
+        metrics = self.results(
+            clf,
+            y_test,
+            X_test,
+            save_path=save_path,
+            threshold=opt_thresh,
+            prefix="tuned_",
+        )
 
-        mlflow.sklearn.log_model(clf, "smote_ensemble_model")
+        mlflow.sklearn.log_model(clf, "smote_lgbm_model")
 
         return clf, opt_thresh, metrics
 
@@ -555,7 +552,7 @@ class EvasionModel:
         model,
         training_hash: str,
         X_train: pd.DataFrame,
-        output_dir: str ,        
+        output_dir: str,
     ) -> pd.DataFrame:
         df_active = self.load_active_students(csv_path)
 
@@ -582,10 +579,11 @@ class EvasionModel:
         mlflow.log_param("risk scoring filepath", out_path)
         return df_ranking
 
+
 if __name__ == "__main__":
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
     mlflow.set_experiment("evasion_risk_scoring_v1")
-    with mlflow.start_run(run_name="Stacked_Ensemble_SMOTE") as run:
+    with mlflow.start_run(run_name="LGBM_SMOTE") as run:
         start_time = time.time()
 
         model_runner = EvasionModel()
@@ -596,10 +594,10 @@ if __name__ == "__main__":
         training_hash = run.info.run_id
         print(f"\n[MLflow] Started Run. Training Hash: {training_hash}")
 
-        mlflow.set_tag("version", "v3.0_smote")
+        mlflow.set_tag("version", "v4.0_lgbm_smote")
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
-        clf, opt_thresh, metrics = model_runner.run_ensemble(csv_path)
+        clf, opt_thresh, metrics = model_runner.run_lgbm_smote(csv_path)
 
         X_train_for_alignment, _X_test, _y_train, _y_test, _gtr, _gte = (
             model_runner.prepare_data(csv_path, calib_size=0.0, log_params=False)
@@ -612,7 +610,7 @@ if __name__ == "__main__":
             X_train=X_train_for_alignment,
             output_dir=results_path,
         )
-        
+
         mlflow.log_param("training_hash", training_hash)
 
         total_time = time.time() - start_time
