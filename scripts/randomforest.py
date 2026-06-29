@@ -6,7 +6,6 @@ import unicodedata
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import mlflow
 import numpy as np
 import pandas as pd
 import yaml
@@ -30,6 +29,8 @@ from sklearn.model_selection import (
     GroupKFold,
     GroupShuffleSplit,
 )
+
+import mlflow
 
 
 class EvasionModel:
@@ -820,7 +821,7 @@ class EvasionModel:
 if __name__ == "__main__":
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
     mlflow.set_experiment("evasion_risk_scoring_v1")
-    with mlflow.start_run(run_name="Stacked_Ensemble") as run:
+    with mlflow.start_run(run_name="Random Forest") as run:
         start_time = time.time()
 
         model_runner = EvasionModel()
