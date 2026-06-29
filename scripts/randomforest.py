@@ -757,8 +757,8 @@ class EvasionModel:
 
         df_ranking["Nivel_Alerta"] = pd.cut(
             df_ranking["Probabilidade_Evasao"],
-            bins=[0, 0.4, 0.7, 1.0],
-            labels=["Baixo", "Moderado", "Critico"],
+            bins=[0, 0.4, 0.7, 0.85, 1.0],
+            labels=["Baixo", "Moderado", "Grave", "Critico"],
             include_lowest=True,
         )
 
