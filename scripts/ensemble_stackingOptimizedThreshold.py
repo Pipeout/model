@@ -6,11 +6,17 @@ import unicodedata
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import mlflow.sklearn
 import numpy as np
 import pandas as pd
-import xgboost as xgb
 import yaml
+from lightgbm import LGBMClassifier
 from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
+from sklearn.ensemble import (
+    RandomForestClassifier,
+    StackingClassifier,
+)
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
     RocCurveDisplay,
@@ -28,6 +34,9 @@ from sklearn.model_selection import (
     GroupKFold,
     GroupShuffleSplit,
 )
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 
 import mlflow
 
@@ -260,20 +269,35 @@ class EvasionModel:
         )
         return X_train_encoded, X_test_encoded
 
+    # ------------------------------------------------------------------ #
+    # Modeling helpers
+    # ------------------------------------------------------------------ #
     @staticmethod
-    def results(model, y_test, X_test, save_path=None, prefix="", beta=2):
+    def model_fitting(X_train, y_train, params):
+        lgb = LGBMClassifier(**params)
+        lgb.fit(X_train, y_train)
+        print(type(lgb))
+        return lgb
+
+    def results(
+        self,
+        model,
+        y_test,
+        X_test,
+        threshold,
+        save_path=None,
+        prefix="",
+        beta=2,
+    ):
         """
         Prints classification metrics (including ROC-AUC) and shows/saves
         the confusion matrix.
         """
-        y_pred = model.predict(X_test)
-        cm = confusion_matrix(y_test, y_pred)
+        y_proba = model.predict_proba(X_test)[:, 1]
 
-        y_proba = (
-            model.predict_proba(X_test)[:, 1]
-            if hasattr(model, "predict_proba")
-            else None
-        )
+        y_pred = (y_proba >= threshold).astype(int)
+
+        cm = confusion_matrix(y_test, y_pred)
 
         print("\n--- Métricas Detalhadas ---")
         print(
@@ -297,8 +321,11 @@ class EvasionModel:
             roc_auc = roc_auc_score(y_test, y_proba)
             print(f"AUPRC: {auprc:.4f}")
             print(f"ROC-AUC: {roc_auc:.4f}")
+            # roc_path, pr_path = self.save_roc_pr_curves(y_test, y_proba, prefix)
+        #  mlflow.log_artifact(roc_path)
+        # mlflow.log_artifact(pr_path)
 
-            # Log fundamental metrics to MLflow
+        # Log fundamental metrics to MLflow
         mlflow.log_metric(f"{prefix}accuracy", acc)
         mlflow.log_metric(f"{prefix}precision", prec)
         mlflow.log_metric(f"{prefix}recall", rec)
@@ -328,6 +355,7 @@ class EvasionModel:
             "recall": rec,
             "f1": f1,
             "roc_auc": auc,
+            "auprc": auprc,
         }
 
     @staticmethod
@@ -392,6 +420,90 @@ class EvasionModel:
             mlflow.log_artifact(save_path)
         else:
             plt.show()
+
+    @staticmethod
+    def find_best_threshold(
+        model,
+        X,
+        y,
+        beta=2,
+        min_threshold=0.05,
+        max_threshold=0.95,
+        step=0.01,
+    ):
+        """
+        Finds the probability threshold that maximizes the F-beta score.
+
+        Parameters
+        ----------
+        model : fitted classifier
+            Any classifier implementing predict_proba().
+        X : pd.DataFrame or np.ndarray
+            Feature matrix.
+        y : pd.Series or np.ndarray
+            Ground-truth labels.
+        beta : float, default=2
+            Beta parameter of the F-beta score.
+        min_threshold : float, default=0.05
+            Lowest threshold to evaluate.
+        max_threshold : float, default=0.95
+            Highest threshold to evaluate.
+        step : float, default=0.01
+            Threshold increment.
+
+        Returns
+        -------
+        best_threshold : float
+            Threshold producing the highest F-beta score.
+
+        best_score : float
+            Best F-beta score.
+
+        results_df : pd.DataFrame
+            F-beta score for every threshold tested.
+        """
+
+        if not hasattr(model, "predict_proba"):
+            raise ValueError("The supplied model does not implement predict_proba().")
+
+        probabilities = model.predict_proba(X)[:, 1]
+        thresholds = np.unique(probabilities)
+
+        scores = []
+
+        best_threshold = 0.5
+        best_score = -1
+
+        for threshold in thresholds:
+            predictions = (probabilities >= threshold).astype(int)
+
+            score = fbeta_score(
+                y,
+                predictions,
+                beta=beta,
+            )
+
+            scores.append(
+                {
+                    "threshold": threshold,
+                    "fbeta": score,
+                }
+            )
+
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+
+        results_df = pd.DataFrame(scores)
+
+        print(f"Best threshold: {best_threshold:.2f}")
+        print(f"Best F{beta}: {best_score:.4f}")
+
+        return (
+            best_threshold,
+            best_score,
+            results_df,
+        )
 
     # ------------------------------------------------------------------ #
     # Shared data preparation (train/test/calibration)
@@ -485,10 +597,43 @@ class EvasionModel:
 
         return X_train_enc, X_test_enc, y_train, y_test, groups_train, groups_test
 
-    def run_xgboost(
+    # ------------------------------------------------------------------ #
+    # Pipelines
+    # ------------------------------------------------------------------ #
+    def run_single_model(self, csv_path, params=None, calib_size=0.2):
+        params = params or {
+            "n_estimators": 1000,
+            "learning_rate": 0.01,
+            "max_depth": 6,
+            "verbose": -1,
+        }
+
+        (
+            X_train,
+            X_calib,
+            X_test,
+            y_train,
+            y_calib,
+            y_test,
+            groups_train,
+            groups_test,
+        ) = self.prepare_data(csv_path, calib_size=calib_size)
+
+        model = self.model_fitting(X_train, y_train, params)
+        metrics = self.results(model, y_test, X_test)
+        self.plot_roc_curve(model, y_test, X_test)
+
+        calibrated_model = self.calibrate_model(model, X_calib, y_calib)
+        print("\n--- Calibrated model results (test set) ---")
+        self.results(calibrated_model, y_test, X_test)
+        self.plot_calibration_curve(calibrated_model, y_test, X_test)
+
+        return model, calibrated_model, metrics
+
+    def run_ensemble(
         self,
         csv_path,
-        save_path="lgbm_confusion_matrix.png",
+        save_path="confusion_matrix.png",
         calib_size=0.2,
     ):
         (
@@ -502,97 +647,139 @@ class EvasionModel:
             groups_test,
         ) = self.prepare_data(csv_path, calib_size=calib_size)
 
+        # ----------------------------
+        # Safety cleanup
+        # ----------------------------
         X_train = X_train.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_calib = X_calib.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-        params = {
+        # ----------------------------
+        # Models
+        # ----------------------------
+        lgb_params = {
             "n_estimators": 1500,
             "learning_rate": 0.005,
             "max_depth": 7,
-            "min_child_weight": 1,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
-            "gamma": 0,
-            "reg_alpha": 0,
-            "reg_lambda": 1,
-            "objective": "binary:logistic",
-            "scale_pos_weight": 0.86,
+            "verbose": -1,
             "random_state": 42,
-            "tree_method": "hist",
-            "eval_metric": "logloss",
-            "verbosity": 0,
+            "objective": "binary",
+            "is_unbalance": False,
+            "scale_pos_weight": 5.0,
+            "boosting_type": "gbdt",
         }
 
-        gkf = GroupKFold(n_splits=10)
+        svc_params = {
+            "C": 1.0,
+            "kernel": "rbf",
+            "gamma": "scale",
+            "probability": True,
+            "random_state": 42,
+        }
 
-        auc_scores = []
+        rf_params = {
+            "n_estimators": 500,
+            "criterion": "gini",
+            "max_depth": 10,
+            "min_samples_split": 5,
+            "class_weight": "balanced_subsample",
+            "random_state": 42,
+        }
 
-        for train_idx, val_idx in gkf.split(
-            X_train,
-            y_train,
-            groups=groups_train,
-        ):
-            X_fold_train = X_train.iloc[train_idx]
-            y_fold_train = y_train.iloc[train_idx]
+        mlflow.log_param("model_type", "VotingClassifier")
+        mlflow.log_param("base_estimators", "RandomForest, LightGBM, SVC")
+        mlflow.log_param("voting", "soft")
 
-            X_fold_val = X_train.iloc[val_idx]
-            y_fold_val = y_train.iloc[val_idx]
+        # ----------------------------
+        # Voting model
+        # ----------------------------
+        def _build_stacking_classifier():
+            estimators = [
+                ("rf", RandomForestClassifier(**rf_params)),
+                ("lgb", LGBMClassifier(**lgb_params)),
+                ("svm", make_pipeline(StandardScaler(), SVC(**svc_params))),
+            ]
 
-            xg = xgb.XGBClassifier(**params)
-
-            xg.fit(
-                X_fold_train,
-                y_fold_train,
+            return StackingClassifier(
+                estimators=estimators,
+                final_estimator=LogisticRegression(
+                    C=1.0,
+                    penalty="l2",
+                    solver="lbfgs",
+                    max_iter=1000,
+                    random_state=42,
+                ),
+                stack_method="predict_proba",
+                cv=5,
+                passthrough=False,
+                n_jobs=-1,
             )
 
-            y_proba = xg.predict_proba(X_fold_val)[:, 1]
+        clf = _build_stacking_classifier()
 
-            auc_scores.append(roc_auc_score(y_fold_val, y_proba))
-
-        print(f"CV ROC-AUC: {np.mean(auc_scores):.4f} (+/- {np.std(auc_scores):.4f})")
-
-        xg = xgb.XGBClassifier(**params)
-
-        xg.fit(
+        clf.fit(
             X_train,
             y_train,
         )
 
-        metrics = self.results(
-            xg,
-            y_test,
-            X_test,
-            save_path=save_path,
-        )
-
-        self.plot_roc_curve(
-            xg,
-            y_test,
-            X_test,
-        )
-
-        calibrated_xgb = self.calibrate_model(
-            xg,
+        # ----------------------------
+        # Calibrate probabilities
+        # ----------------------------
+        calibrated_clf = self.calibrate_model(
+            clf,
             X_calib,
             y_calib,
         )
 
-        print("\n--- Calibrated XGBoost results ---")
+        # ----------------------------
+        # Find best threshold
+        # ----------------------------
+        best_threshold, best_f2, threshold_results = self.find_best_threshold(
+            calibrated_clf,
+            X_calib,
+            y_calib,
+            beta=2,
+        )
 
-        self.results(
-            calibrated_xgb,
+        print(f"\nBest threshold: {best_threshold:.2f}")
+        print(f"Best calibration F2: {best_f2:.4f}")
+
+        # ----------------------------
+        # Final evaluation
+        # ----------------------------
+        metrics = self.results(
+            calibrated_clf,
+            y_test,
+            X_test,
+            threshold=best_threshold,
+            save_path=save_path,
+        )
+
+        self.plot_roc_curve(
+            calibrated_clf,
             y_test,
             X_test,
         )
 
         self.plot_calibration_curve(
-            calibrated_xgb,
+            calibrated_clf,
             y_test,
             X_test,
         )
 
-        return xg, calibrated_xgb, metrics
+        mlflow.log_metric("best_threshold", best_threshold)
+        mlflow.log_metric("best_calibration_f2", best_f2)
+
+        mlflow.sklearn.log_model(
+            calibrated_clf,
+            "calibrated_voting_model",
+        )
+
+        return (
+            clf,
+            calibrated_clf,
+            metrics,
+        )
 
     # ------------------------------------------------------------------ #
     # Inference / risk-scoring for currently active students
@@ -776,7 +963,7 @@ class EvasionModel:
 if __name__ == "__main__":
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
     mlflow.set_experiment("evasion_risk_scoring_v1")
-    with mlflow.start_run(run_name="LightGBM Calibrated") as run:
+    with mlflow.start_run(run_name="Stacked_Ensemble") as run:
         start_time = time.time()
 
         model_runner = EvasionModel()
@@ -792,7 +979,7 @@ if __name__ == "__main__":
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
         # Train the stacking ensemble (with calibration + ROC-AUC reporting).
-        clf, calibrated_clf, metrics = model_runner.run_xgboost(csv_path)
+        clf, calibrated_clf, metrics = model_runner.run_ensemble(csv_path)
 
         # Recompute X_train (without the calibration carve-out) purely as the
         # column-alignment reference for inference, matching what `clf` was

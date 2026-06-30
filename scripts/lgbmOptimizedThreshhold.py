@@ -90,6 +90,7 @@ class EvasionModel:
     def __init__(self, dfs=None, config_path=None):
         self.config_path = config_path or self.get_config_file()
         self.dfs = dfs
+        self.best_threshold = None
 
     # ------------------------------------------------------------------ #
     # Config / IO helpers
@@ -260,15 +261,74 @@ class EvasionModel:
         )
         return X_train_encoded, X_test_encoded
 
-    # ------------------------------------------------------------------ #
-    # Modeling helpers
-    # ------------------------------------------------------------------ #
     @staticmethod
-    def model_fitting(X_train, y_train, params):
-        lgb = LGBMClassifier(**params)
-        lgb.fit(X_train, y_train)
-        print(type(lgb))
-        return lgb
+    def plot_threshold_analysis(
+        threshold_results,
+        best_threshold,
+        save_path="lgbm_threshold_analysis.png",
+    ):
+
+        plt.figure(figsize=(9, 6))
+
+        plt.plot(
+            threshold_results["threshold"],
+            threshold_results["precision"],
+            label="Precision",
+            linewidth=2,
+        )
+
+        plt.plot(
+            threshold_results["threshold"],
+            threshold_results["recall"],
+            label="Recall",
+            linewidth=2,
+        )
+
+        plt.plot(
+            threshold_results["threshold"],
+            threshold_results["f2"],
+            label="F₂-score",
+            linewidth=3,
+        )
+
+        plt.axvline(
+            best_threshold,
+            color="black",
+            linestyle="--",
+            linewidth=2,
+            label=f"Best threshold = {best_threshold:.2f}",
+        )
+
+        plt.scatter(
+            best_threshold,
+            threshold_results.loc[
+                threshold_results["threshold"] == best_threshold,
+                "f2",
+            ].iloc[0],
+            s=80,
+            zorder=5,
+        )
+
+        plt.xlabel("Decision Threshold")
+        plt.ylabel("Metric Value")
+        plt.title("Threshold Selection Based on F₂-score")
+        plt.xlim(0, 1)
+        plt.ylim(0, 1.05)
+
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+
+        plt.tight_layout()
+
+        plt.savefig(
+            save_path,
+            dpi=300,
+            bbox_inches="tight",
+        )
+
+        plt.show()
+
+        plt.close()
 
     def results(
         self,
@@ -504,16 +564,8 @@ class EvasionModel:
 
         return X_train_enc, X_test_enc, y_train, y_test, groups_train, groups_test
 
-    @staticmethod
-    def find_best_threshold(
-        model,
-        X,
-        y,
-        beta=2,
-        min_threshold=0.05,
-        max_threshold=0.95,
-        step=0.01,
-    ):
+    # @staticmethod
+    def find_best_threshold(self, model, X, y, beta=2):
         """
         Finds the probability threshold that maximizes the F-beta score.
 
@@ -552,12 +604,6 @@ class EvasionModel:
         probabilities = model.predict_proba(X)[:, 1]
         thresholds = np.unique(probabilities)
 
-        # thresholds = np.arange(
-        #     min_threshold,
-        #     max_threshold + step,
-        #     step,
-        # )
-
         scores = []
 
         best_threshold = 0.5
@@ -566,27 +612,51 @@ class EvasionModel:
         for threshold in thresholds:
             predictions = (probabilities >= threshold).astype(int)
 
-            score = fbeta_score(
+            precision = precision_score(
+                y,
+                predictions,
+                zero_division=0,
+            )
+
+            recall = recall_score(
+                y,
+                predictions,
+                zero_division=0,
+            )
+
+            f1 = f1_score(
+                y,
+                predictions,
+                zero_division=0,
+            )
+
+            f2 = fbeta_score(
                 y,
                 predictions,
                 beta=beta,
+                zero_division=0,
             )
 
             scores.append(
                 {
                     "threshold": threshold,
-                    "fbeta": score,
+                    "precision": precision,
+                    "recall": recall,
+                    "f1": f1,
+                    "f2": f2,
                 }
             )
 
-            if score > best_score:
-                best_score = score
+            if f2 > best_score:
+                best_score = f2
                 best_threshold = threshold
 
         results_df = pd.DataFrame(scores)
 
         print(f"Best threshold: {best_threshold:.2f}")
         print(f"Best F{beta}: {best_score:.4f}")
+
+        self.best_threshold = best_threshold
 
         return (
             best_threshold,
@@ -686,6 +756,11 @@ class EvasionModel:
             X_calib,
             y_calib,
             beta=2,
+        )
+        self.plot_threshold_analysis(
+            threshold_results,
+            best_threshold,
+            save_path="ligbm_threshold_analysis.png",
         )
 
         print(f"\nBest threshold: {best_threshold:.2f}")
@@ -810,9 +885,12 @@ class EvasionModel:
 
         return X_inference
 
-    @staticmethod
+    # @staticmethod
     def score_active_students(
-        model, df_latest_active: pd.DataFrame, X_inference: pd.DataFrame
+        self,
+        model,
+        df_latest_active: pd.DataFrame,
+        X_inference: pd.DataFrame,
     ) -> pd.DataFrame:
         """
         Scores active students with the fitted model's predict_proba and
@@ -833,10 +911,17 @@ class EvasionModel:
             }
         ).sort_values(by="Probabilidade_Evasao", ascending=False)
 
+        threshold = self.best_threshold
+
         df_ranking["Nivel_Alerta"] = pd.cut(
             df_ranking["Probabilidade_Evasao"],
-            bins=[0, 0.4, 0.7, 1.0],
-            labels=["Baixo", "Moderado", "Critico"],
+            bins=[0, threshold, 0.50, 0.75, 1.0],
+            labels=[
+                "Baixo",
+                "Moderado",
+                "Alto",
+                "Critico",
+            ],
             include_lowest=True,
         )
 

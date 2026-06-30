@@ -215,6 +215,105 @@ class EvasionModel:
 
         return X_train, X_test, y_train, y_test, groups_train, groups_test
 
+    def find_best_threshold(self, model, X, y, beta=2):
+        """
+        Finds the probability threshold that maximizes the F-beta score.
+
+        Parameters
+        ----------
+        model : fitted classifier
+            Any classifier implementing predict_proba().
+        X : pd.DataFrame or np.ndarray
+            Feature matrix.
+        y : pd.Series or np.ndarray
+            Ground-truth labels.
+        beta : float, default=2
+            Beta parameter of the F-beta score.
+        min_threshold : float, default=0.05
+            Lowest threshold to evaluate.
+        max_threshold : float, default=0.95
+            Highest threshold to evaluate.
+        step : float, default=0.01
+            Threshold increment.
+
+        Returns
+        -------
+        best_threshold : float
+            Threshold producing the highest F-beta score.
+
+        best_score : float
+            Best F-beta score.
+
+        results_df : pd.DataFrame
+            F-beta score for every threshold tested.
+        """
+
+        if not hasattr(model, "predict_proba"):
+            raise ValueError("The supplied model does not implement predict_proba().")
+
+        probabilities = model.predict_proba(X)[:, 1]
+        thresholds = np.unique(probabilities)
+
+        scores = []
+
+        best_threshold = 0.5
+        best_score = -1
+
+        for threshold in thresholds:
+            predictions = (probabilities >= threshold).astype(int)
+
+            precision = precision_score(
+                y,
+                predictions,
+                zero_division=0,
+            )
+
+            recall = recall_score(
+                y,
+                predictions,
+                zero_division=0,
+            )
+
+            f1 = f1_score(
+                y,
+                predictions,
+                zero_division=0,
+            )
+
+            f2 = fbeta_score(
+                y,
+                predictions,
+                beta=beta,
+                zero_division=0,
+            )
+
+            scores.append(
+                {
+                    "threshold": threshold,
+                    "precision": precision,
+                    "recall": recall,
+                    "f1": f1,
+                    "f2": f2,
+                }
+            )
+
+            if f2 > best_score:
+                best_score = f2
+                best_threshold = threshold
+
+        results_df = pd.DataFrame(scores)
+
+        print(f"Best threshold: {best_threshold:.2f}")
+        print(f"Best F{beta}: {best_score:.4f}")
+
+        self.best_threshold = best_threshold
+
+        return (
+            best_threshold,
+            best_score,
+            results_df,
+        )
+
     @staticmethod
     def split_calibration_set(
         X_train: pd.DataFrame,
@@ -261,19 +360,93 @@ class EvasionModel:
         return X_train_encoded, X_test_encoded
 
     @staticmethod
-    def results(model, y_test, X_test, save_path=None, prefix="", beta=2):
+    def plot_threshold_analysis(
+        threshold_results,
+        best_threshold,
+        save_path="lgbm_threshold_analysis.png",
+    ):
+
+        plt.figure(figsize=(9, 6))
+
+        plt.plot(
+            threshold_results["threshold"],
+            threshold_results["precision"],
+            label="Precision",
+            linewidth=2,
+        )
+
+        plt.plot(
+            threshold_results["threshold"],
+            threshold_results["recall"],
+            label="Recall",
+            linewidth=2,
+        )
+
+        plt.plot(
+            threshold_results["threshold"],
+            threshold_results["f2"],
+            label="F₂-score",
+            linewidth=3,
+        )
+
+        plt.axvline(
+            best_threshold,
+            color="black",
+            linestyle="--",
+            linewidth=2,
+            label=f"Best threshold = {best_threshold:.2f}",
+        )
+
+        plt.scatter(
+            best_threshold,
+            threshold_results.loc[
+                threshold_results["threshold"] == best_threshold,
+                "f2",
+            ].iloc[0],
+            s=80,
+            zorder=5,
+        )
+
+        plt.xlabel("Decision Threshold")
+        plt.ylabel("Metric Value")
+        plt.title("Threshold Selection Based on F₂-score")
+        plt.xlim(0, 1)
+        plt.ylim(0, 1.05)
+
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+
+        plt.tight_layout()
+
+        plt.savefig(
+            save_path,
+            dpi=300,
+            bbox_inches="tight",
+        )
+
+        plt.show()
+
+        plt.close()
+
+    def results(
+        self,
+        model,
+        y_test,
+        X_test,
+        threshold,
+        save_path=None,
+        prefix="",
+        beta=2,
+    ):
         """
         Prints classification metrics (including ROC-AUC) and shows/saves
         the confusion matrix.
         """
-        y_pred = model.predict(X_test)
-        cm = confusion_matrix(y_test, y_pred)
+        y_proba = model.predict_proba(X_test)[:, 1]
 
-        y_proba = (
-            model.predict_proba(X_test)[:, 1]
-            if hasattr(model, "predict_proba")
-            else None
-        )
+        y_pred = (y_proba >= threshold).astype(int)
+
+        cm = confusion_matrix(y_test, y_pred)
 
         print("\n--- Métricas Detalhadas ---")
         print(
@@ -297,8 +470,11 @@ class EvasionModel:
             roc_auc = roc_auc_score(y_test, y_proba)
             print(f"AUPRC: {auprc:.4f}")
             print(f"ROC-AUC: {roc_auc:.4f}")
+            # roc_path, pr_path = self.save_roc_pr_curves(y_test, y_proba, prefix)
+        #  mlflow.log_artifact(roc_path)
+        # mlflow.log_artifact(pr_path)
 
-            # Log fundamental metrics to MLflow
+        # Log fundamental metrics to MLflow
         mlflow.log_metric(f"{prefix}accuracy", acc)
         mlflow.log_metric(f"{prefix}precision", prec)
         mlflow.log_metric(f"{prefix}recall", rec)
@@ -328,6 +504,7 @@ class EvasionModel:
             "recall": rec,
             "f1": f1,
             "roc_auc": auc,
+            "auprc": auprc,
         }
 
     @staticmethod
@@ -488,7 +665,7 @@ class EvasionModel:
     def run_xgboost(
         self,
         csv_path,
-        save_path="lgbm_confusion_matrix.png",
+        save_path="xgb_confusion_matrix.png",
         calib_size=0.2,
     ):
         (
@@ -539,48 +716,86 @@ class EvasionModel:
             X_fold_val = X_train.iloc[val_idx]
             y_fold_val = y_train.iloc[val_idx]
 
-            xg = xgb.XGBClassifier(**params)
+            xgb_model = xgb.XGBClassifier(**params)
 
-            xg.fit(
+            xgb_model.fit(
                 X_fold_train,
                 y_fold_train,
             )
 
-            y_proba = xg.predict_proba(X_fold_val)[:, 1]
+            y_proba = xgb_model.predict_proba(X_fold_val)[:, 1]
 
-            auc_scores.append(roc_auc_score(y_fold_val, y_proba))
+            auc_scores.append(
+                roc_auc_score(
+                    y_fold_val,
+                    y_proba,
+                )
+            )
 
         print(f"CV ROC-AUC: {np.mean(auc_scores):.4f} (+/- {np.std(auc_scores):.4f})")
 
-        xg = xgb.XGBClassifier(**params)
+        # ---------------------------------------
+        # Train final model
+        # ---------------------------------------
 
-        xg.fit(
+        xgb_model = xgb.XGBClassifier(**params)
+
+        xgb_model.fit(
             X_train,
             y_train,
         )
 
-        metrics = self.results(
-            xg,
-            y_test,
-            X_test,
-            save_path=save_path,
-        )
-
-        self.plot_roc_curve(
-            xg,
-            y_test,
-            X_test,
-        )
+        # ---------------------------------------
+        # Calibrate probabilities
+        # ---------------------------------------
 
         calibrated_xgb = self.calibrate_model(
-            xg,
+            xgb_model,
             X_calib,
             y_calib,
         )
 
-        print("\n--- Calibrated XGBoost results ---")
+        # ---------------------------------------
+        # Find best threshold
+        # ---------------------------------------
 
-        self.results(
+        (
+            best_threshold,
+            best_f2,
+            threshold_results,
+        ) = self.find_best_threshold(
+            calibrated_xgb,
+            X_calib,
+            y_calib,
+            beta=2,
+        )
+
+        print(f"\nBest threshold: {best_threshold:.2f}")
+        print(f"Best calibration F2: {best_f2:.4f}")
+
+        # ---------------------------------------
+        # Plot threshold analysis
+        # ---------------------------------------
+
+        self.plot_threshold_analysis(
+            threshold_results,
+            best_threshold,
+            save_path="xgb_threshold_analysis.png",
+        )
+
+        # ---------------------------------------
+        # Final evaluation
+        # ---------------------------------------
+
+        metrics = self.results(
+            calibrated_xgb,
+            y_test,
+            X_test,
+            threshold=best_threshold,
+            save_path=save_path,
+        )
+
+        self.plot_roc_curve(
             calibrated_xgb,
             y_test,
             X_test,
@@ -592,7 +807,11 @@ class EvasionModel:
             X_test,
         )
 
-        return xg, calibrated_xgb, metrics
+        return (
+            xgb_model,
+            calibrated_xgb,
+            metrics,
+        )
 
     # ------------------------------------------------------------------ #
     # Inference / risk-scoring for currently active students
