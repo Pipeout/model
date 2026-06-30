@@ -13,6 +13,7 @@ import yaml
 from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
+    PrecisionRecallDisplay,
     RocCurveDisplay,
     accuracy_score,
     average_precision_score,
@@ -359,6 +360,52 @@ class EvasionModel:
         )
         return X_train_encoded, X_test_encoded
 
+    def save_roc_pr_curves(self, y_test, y_proba, prefix="xgbOptimizedThreshold"):
+        """
+        Saves ROC and Precision-Recall curves in a clean publication-style format.
+        """
+
+        # -------------------------
+        # ROC CURVE
+        # -------------------------
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+        RocCurveDisplay.from_predictions(
+            y_test, y_proba, ax=ax, color="orange", linewidth=2
+        )
+
+        ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
+
+        ax.set_title("ROC Curve", fontsize=14, fontweight="bold")
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+
+        ax.grid(True, alpha=0.3)
+
+        roc_path = f"{prefix}roc_curve.png"
+        plt.savefig(roc_path, dpi=300, bbox_inches="tight")
+        plt.close()
+
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+        PrecisionRecallDisplay.from_predictions(
+            y_test, y_proba, ax=ax, color="orange", linewidth=2
+        )
+
+        ax.set_title("Precision–Recall Curve", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Recall")
+        ax.set_ylabel("Precision")
+
+        baseline = sum(y_test) / len(y_test)
+        ax.hlines(baseline, 0, 1, linestyles="--", colors="gray", linewidth=1)
+
+        ax.grid(True, alpha=0.3)
+
+        pr_path = f"{prefix}pr_curve.png"
+        plt.savefig(pr_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        return roc_path, pr_path
+
     @staticmethod
     def plot_threshold_analysis(
         threshold_results,
@@ -470,9 +517,9 @@ class EvasionModel:
             roc_auc = roc_auc_score(y_test, y_proba)
             print(f"AUPRC: {auprc:.4f}")
             print(f"ROC-AUC: {roc_auc:.4f}")
-            # roc_path, pr_path = self.save_roc_pr_curves(y_test, y_proba, prefix)
-        #  mlflow.log_artifact(roc_path)
-        # mlflow.log_artifact(pr_path)
+            roc_path, pr_path = self.save_roc_pr_curves(y_test, y_proba, prefix)
+        mlflow.log_artifact(roc_path)
+        mlflow.log_artifact(pr_path)
 
         # Log fundamental metrics to MLflow
         mlflow.log_metric(f"{prefix}accuracy", acc)
@@ -507,21 +554,30 @@ class EvasionModel:
             "auprc": auprc,
         }
 
-    @staticmethod
-    def plot_roc_curve(model, y_test, X_test, save_path=None):
-        if not hasattr(model, "predict_proba"):
-            print("Model has no predict_proba; skipping ROC curve.")
-            return None
+    # def plot_roc_curve(model, y_test, X_test, save_path=None):
+    #     if not hasattr(model, "predict_proba"):
+    #         print("Model has no predict_proba; skipping ROC curve.")
+    #         return None
 
-        RocCurveDisplay.from_estimator(model, X_test, y_test)
-        plt.title("Curva ROC: Evasão Estudantil")
+    #    fig, ax = plt.subplots(figsize=(7, 5))
 
-        if save_path:
-            plt.savefig(save_path)
-            plt.close()
-            mlflow.log_artifact(save_path)
-        else:
-            plt.show()
+    #    RocCurveDisplay.from_predictions(
+    #        y_test, y_proba, ax=ax, color="orange", linewidth=2
+    #    )
+
+    #    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
+
+    #    ax.set_title("ROC Curve", fontsize=14, fontweight="bold")
+    #    ax.set_xlabel("False Positive Rate")
+    #    ax.set_ylabel("True Positive Rate")
+
+    #    ax.grid(True, alpha=0.3)
+
+    #    roc_path = f"{prefix}roc_curve.png"
+    #    plt.savefig(roc_path, dpi=300, bbox_inches="tight")
+    #    plt.close()
+
+    #    fig, ax = plt.subplots(figsize=(7, 5))
 
     @staticmethod
     def calibrate_model(base_model, X_calib, y_calib, method="isotonic"):
@@ -555,16 +611,54 @@ class EvasionModel:
         return calibrated
 
     @staticmethod
-    def plot_calibration_curve(model, y_test, X_test, n_bins=10, save_path=None):
+    def plot_calibration_curve(
+        model,
+        y_test,
+        X_test,
+        n_bins=10,
+        save_path=None,
+        title="Calibration Curve",
+    ):
+        """
+        Plots a publication-quality calibration curve.
+        """
+
         if not hasattr(model, "predict_proba"):
             print("Model has no predict_proba; skipping calibration curve.")
             return None
 
-        CalibrationDisplay.from_estimator(model, X_test, y_test, n_bins=n_bins)
-        plt.title("Curva de Calibração: Evasão Estudantil")
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+        CalibrationDisplay.from_estimator(
+            model,
+            X_test,
+            y_test,
+            n_bins=n_bins,
+            strategy="uniform",
+            ax=ax,
+            color="orange",
+            linewidth=2,
+        )
+
+        # Perfect calibration reference
+        ax.plot(
+            [0, 1],
+            [0, 1],
+            linestyle="--",
+            color="gray",
+            linewidth=1,
+            label="Perfect calibration",
+        )
+
+        ax.set_title(title, fontsize=14, fontweight="bold")
+        ax.set_xlabel("Mean Predicted Probability")
+        ax.set_ylabel("Observed Frequency")
+
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best", frameon=True)
 
         if save_path:
-            plt.savefig(save_path)
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
             plt.close()
             mlflow.log_artifact(save_path)
         else:
@@ -795,16 +889,11 @@ class EvasionModel:
             save_path=save_path,
         )
 
-        self.plot_roc_curve(
-            calibrated_xgb,
-            y_test,
-            X_test,
-        )
-
         self.plot_calibration_curve(
             calibrated_xgb,
             y_test,
             X_test,
+            save_path="xgbOptimizedThreshold-calibration-curve.png",
         )
 
         return (

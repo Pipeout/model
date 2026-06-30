@@ -240,7 +240,7 @@ if __name__ == "__main__":
     X_fit, X_test = X_fit.align(X_test, join="left", axis=1, fill_value=0)
     X_calib = X_calib[X_fit.columns]
 
-    clf = LogisticRegression(random_state=42, max_iter=5000, class_weight="balanced")
+    clf = LogisticRegression(random_state=42, max_iter=5000)
 
     clf.fit(X_fit, y_fit)
 
@@ -326,46 +326,46 @@ if __name__ == "__main__":
     # (the base model) rather than `calibrated_clf`, since the calibration
     # wrapper (isotonic/sigmoid) doesn't expose a single coefficient
     # vector in the same way.
-    feature_importance_df = (
-        pd.DataFrame(
-            {
-                "feature": X_fit.columns,
-                "coefficient": clf.coef_[0],
-            }
-        )
-        .assign(abs_coefficient=lambda d: d["coefficient"].abs())
-        .sort_values("abs_coefficient", ascending=False)
-        .drop(columns="abs_coefficient")
-        .reset_index(drop=True)
-    )
+    # feature_importance_df = (
+    #     pd.DataFrame(
+    #         {
+    #             "feature": X_fit.columns,
+    #             "coefficient": clf.coef_[0],
+    #         }
+    #     )
+    #     .assign(abs_coefficient=lambda d: d["coefficient"].abs())
+    #     .sort_values("abs_coefficient", ascending=False)
+    #     .drop(columns="abs_coefficient")
+    #     .reset_index(drop=True)
+    # )
 
-    print("\n--- Top 20 Features by |Coefficient| (Logistic Regression) ---")
-    print(feature_importance_df.head(20).to_string(index=False))
+    # print("\n--- Top 20 Features by |Coefficient| (Logistic Regression) ---")
+    # print(feature_importance_df.head(20).to_string(index=False))
 
-    # --- Feature importance (permutation importance, model-agnostic) ---
-    # Slower but accounts for the calibration wrapper and any feature
-    # correlations, since it measures the actual drop in test performance
-    # when a feature's values are shuffled.
-    perm_result = permutation_importance(
-        calibrated_clf,
-        X_test,
-        y_test,
-        n_repeats=10,
-        random_state=42,
-        scoring="average_precision",
-    )
+    # # --- Feature importance (permutation importance, model-agnostic) ---
+    # # Slower but accounts for the calibration wrapper and any feature
+    # # correlations, since it measures the actual drop in test performance
+    # # when a feature's values are shuffled.
+    # perm_result = permutation_importance(
+    #     calibrated_clf,
+    #     X_test,
+    #     y_test,
+    #     n_repeats=10,
+    #     random_state=42,
+    #     scoring="average_precision",
+    # )
 
-    perm_importance_df = (
-        pd.DataFrame(
-            {
-                "feature": X_test.columns,
-                "importance_mean": perm_result.importances_mean,
-                "importance_std": perm_result.importances_std,
-            }
-        )
-        .sort_values("importance_mean", ascending=False)
-        .reset_index(drop=True)
-    )
+    # perm_importance_df = (
+    #     pd.DataFrame(
+    #         {
+    #             "feature": X_test.columns,
+    #             "importance_mean": perm_result.importances_mean,
+    #             "importance_std": perm_result.importances_std,
+    #         }
+    #     )
+    #     .sort_values("importance_mean", ascending=False)
+    #     .reset_index(drop=True)
+    # )
 
-    print("\n--- Top 20 Features by Permutation Importance (AUPRC drop) ---")
-    print(perm_importance_df.head(20).to_string(index=False))
+    # print("\n--- Top 20 Features by Permutation Importance (AUPRC drop) ---")
+    # print(perm_importance_df.head(20).to_string(index=False))
