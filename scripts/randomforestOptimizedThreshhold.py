@@ -310,6 +310,95 @@ class EvasionModel:
         plt.close()
         return roc_path, pr_path
 
+    @staticmethod
+    def find_best_threshold(
+        model,
+        X,
+        y,
+        beta=2,
+        min_threshold=0.05,
+        max_threshold=0.95,
+        step=0.01,
+    ):
+        """
+        Finds the probability threshold that maximizes the F-beta score.
+
+        Parameters
+        ----------
+        model : fitted classifier
+            Any classifier implementing predict_proba().
+        X : pd.DataFrame or np.ndarray
+            Feature matrix.
+        y : pd.Series or np.ndarray
+            Ground-truth labels.
+        beta : float, default=2
+            Beta parameter of the F-beta score.
+        min_threshold : float, default=0.05
+            Lowest threshold to evaluate.
+        max_threshold : float, default=0.95
+            Highest threshold to evaluate.
+        step : float, default=0.01
+            Threshold increment.
+
+        Returns
+        -------
+        best_threshold : float
+            Threshold producing the highest F-beta score.
+
+        best_score : float
+            Best F-beta score.
+
+        results_df : pd.DataFrame
+            F-beta score for every threshold tested.
+        """
+
+        if not hasattr(model, "predict_proba"):
+            raise ValueError("The supplied model does not implement predict_proba().")
+
+        probabilities = model.predict_proba(X)[:, 1]
+
+        thresholds = np.arange(
+            min_threshold,
+            max_threshold + step,
+            step,
+        )
+
+        scores = []
+
+        best_threshold = 0.5
+        best_score = -1
+
+        for threshold in thresholds:
+            predictions = (probabilities >= threshold).astype(int)
+
+            score = fbeta_score(
+                y,
+                predictions,
+                beta=beta,
+            )
+
+            scores.append(
+                {
+                    "threshold": threshold,
+                    "fbeta": score,
+                }
+            )
+
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+
+        results_df = pd.DataFrame(scores)
+
+        print(f"Best threshold: {best_threshold:.2f}")
+        print(f"Best F{beta}: {best_score:.4f}")
+
+        return (
+            best_threshold,
+            best_score,
+            results_df,
+        )
+
     def results(
         self,
         model,
@@ -324,16 +413,11 @@ class EvasionModel:
         Prints classification metrics (including ROC-AUC) and shows/saves
         the confusion matrix.
         """
-        y_pred = model.predict(X_test)
-        cm = confusion_matrix(y_test, y_pred)
-
-        y_proba = (
-            model.predict_proba(X_test)[:, 1]
-            if hasattr(model, "predict_proba")
-            else None
-        )
+        y_proba = model.predict_proba(X_test)[:, 1]
 
         y_pred = (y_proba >= threshold).astype(int)
+
+        cm = confusion_matrix(y_test, y_pred)
 
         print("\n--- Métricas Detalhadas ---")
         print(
@@ -615,35 +699,26 @@ class EvasionModel:
 
         rf.fit(X_train, y_train)
 
-        # Encontrar o melhor threshold usando o conjunto de calibração
-        y_calib_proba = rf.predict_proba(X_calib)[:, 1]
+        calibrated_rf = self.calibrate_model(
+            rf,
+            X_calib,
+            y_calib,
+        )
 
-        thresholds = np.arange(0.05, 0.96, 0.01)
+        best_threshold, best_f2, threshold_results = self.find_best_threshold(
+            calibrated_rf,
+            X_calib,
+            y_calib,
+            beta=2,
+        )
 
-        best_threshold = 0.5
-        best_f2 = -1
-
-        for t in thresholds:
-            y_pred = (y_calib_proba >= t).astype(int)
-
-            score = fbeta_score(
-                y_calib,
-                y_pred,
-                beta=2,
-            )
-
-            if score > best_f2:
-                best_f2 = score
-                best_threshold = t
-
-        print(f"Best threshold: {best_threshold:.2f}")
-        print(f"Best F2 on calibration: {best_f2:.4f}")
+        print(f"best threshhold: {best_threshold}")
 
         metrics = self.results(
-            rf,
+            calibrated_rf,
             y_test,
             X_test,
-            best_threshold,
+            threshold=best_threshold,
             save_path=save_path,
         )
 

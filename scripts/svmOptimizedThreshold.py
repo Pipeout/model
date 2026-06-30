@@ -265,19 +265,114 @@ class EvasionModel:
         return X_train_encoded, X_test_encoded
 
     @staticmethod
-    def results(model, y_test, X_test, save_path=None, prefix="", beta=2):
+    def find_best_threshold(
+        model,
+        X,
+        y,
+        beta=2,
+        min_threshold=0.05,
+        max_threshold=0.95,
+        step=0.01,
+    ):
+        """
+        Finds the probability threshold that maximizes the F-beta score.
+
+        Parameters
+        ----------
+        model : fitted classifier
+            Any classifier implementing predict_proba().
+        X : pd.DataFrame or np.ndarray
+            Feature matrix.
+        y : pd.Series or np.ndarray
+            Ground-truth labels.
+        beta : float, default=2
+            Beta parameter of the F-beta score.
+        min_threshold : float, default=0.05
+            Lowest threshold to evaluate.
+        max_threshold : float, default=0.95
+            Highest threshold to evaluate.
+        step : float, default=0.01
+            Threshold increment.
+
+        Returns
+        -------
+        best_threshold : float
+            Threshold producing the highest F-beta score.
+
+        best_score : float
+            Best F-beta score.
+
+        results_df : pd.DataFrame
+            F-beta score for every threshold tested.
+        """
+
+        if not hasattr(model, "predict_proba"):
+            raise ValueError("The supplied model does not implement predict_proba().")
+
+        probabilities = model.predict_proba(X)[:, 1]
+        thresholds = np.unique(probabilities)
+
+        # thresholds = np.arange(
+        #     min_threshold,
+        #     max_threshold + step,
+        #     step,
+        # )
+
+        scores = []
+
+        best_threshold = 0.5
+        best_score = -1
+
+        for threshold in thresholds:
+            predictions = (probabilities >= threshold).astype(int)
+
+            score = fbeta_score(
+                y,
+                predictions,
+                beta=beta,
+            )
+
+            scores.append(
+                {
+                    "threshold": threshold,
+                    "fbeta": score,
+                }
+            )
+
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+
+        results_df = pd.DataFrame(scores)
+
+        print(f"Best threshold: {best_threshold:.2f}")
+        print(f"Best F{beta}: {best_score:.4f}")
+
+        return (
+            best_threshold,
+            best_score,
+            results_df,
+        )
+
+    def results(
+        self,
+        model,
+        y_test,
+        X_test,
+        threshold,
+        save_path=None,
+        prefix="",
+        beta=2,
+    ):
         """
         Prints classification metrics (including ROC-AUC) and shows/saves
         the confusion matrix.
         """
-        y_pred = model.predict(X_test)
-        cm = confusion_matrix(y_test, y_pred)
+        y_proba = model.predict_proba(X_test)[:, 1]
 
-        y_proba = (
-            model.predict_proba(X_test)[:, 1]
-            if hasattr(model, "predict_proba")
-            else None
-        )
+        y_pred = (y_proba >= threshold).astype(int)
+
+        cm = confusion_matrix(y_test, y_pred)
 
         print("\n--- Métricas Detalhadas ---")
         print(
@@ -291,7 +386,7 @@ class EvasionModel:
         f1 = f1_score(y_test, y_pred)
         fbeta = fbeta_score(y_test, y_pred, beta=beta)
 
-        print(f"F_beta: {fbeta}")
+        print(f"F_{beta}: {fbeta}")
 
         auc = None
         auprc = None
@@ -301,8 +396,11 @@ class EvasionModel:
             roc_auc = roc_auc_score(y_test, y_proba)
             print(f"AUPRC: {auprc:.4f}")
             print(f"ROC-AUC: {roc_auc:.4f}")
+            # roc_path, pr_path = self.save_roc_pr_curves(y_test, y_proba, prefix)
+        #  mlflow.log_artifact(roc_path)
+        # mlflow.log_artifact(pr_path)
 
-            # Log fundamental metrics to MLflow
+        # Log fundamental metrics to MLflow
         mlflow.log_metric(f"{prefix}accuracy", acc)
         mlflow.log_metric(f"{prefix}precision", prec)
         mlflow.log_metric(f"{prefix}recall", rec)
@@ -332,6 +430,7 @@ class EvasionModel:
             "recall": rec,
             "f1": f1,
             "roc_auc": auc,
+            "auprc": auprc,
         }
 
     @staticmethod
@@ -533,7 +632,6 @@ class EvasionModel:
                     gamma="scale",
                     probability=True,
                     random_state=42,
-                    # class_weight={0: 1, 1: 5}
                 ),
             )
 
@@ -544,10 +642,18 @@ class EvasionModel:
 
             y_proba = svm.predict_proba(X_fold_val)[:, 1]
 
-            auc_scores.append(roc_auc_score(y_fold_val, y_proba))
+            auc_scores.append(
+                roc_auc_score(
+                    y_fold_val,
+                    y_proba,
+                )
+            )
 
         print(f"CV ROC-AUC: {np.mean(auc_scores):.4f} (+/- {np.std(auc_scores):.4f})")
 
+        # -----------------------------
+        # Train final model
+        # -----------------------------
         svm = make_pipeline(
             StandardScaler(),
             SVC(
@@ -564,28 +670,40 @@ class EvasionModel:
             y_train,
         )
 
-        metrics = self.results(
-            svm,
-            y_test,
-            X_test,
-            save_path=save_path,
-        )
-
-        self.plot_roc_curve(
-            svm,
-            y_test,
-            X_test,
-        )
-
+        # -----------------------------
+        # Calibrate probabilities
+        # -----------------------------
         calibrated_svm = self.calibrate_model(
             svm,
             X_calib,
             y_calib,
         )
 
-        print("\n--- Calibrated SVM results ---")
+        # -----------------------------
+        # Find the best threshold
+        # -----------------------------
+        best_threshold, best_f2, threshold_results = self.find_best_threshold(
+            calibrated_svm,
+            X_calib,
+            y_calib,
+            beta=2,
+        )
 
-        self.results(
+        print(f"\nBest threshold: {best_threshold:.2f}")
+        print(f"Best calibration F2: {best_f2:.4f}")
+
+        # -----------------------------
+        # Final evaluation
+        # -----------------------------
+        metrics = self.results(
+            calibrated_svm,
+            y_test,
+            X_test,
+            threshold=best_threshold,
+            save_path=save_path,
+        )
+
+        self.plot_roc_curve(
             calibrated_svm,
             y_test,
             X_test,
