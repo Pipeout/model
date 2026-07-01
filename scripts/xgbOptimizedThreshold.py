@@ -6,9 +6,9 @@ import unicodedata
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import mlflow.sklearn
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 import yaml
 from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
 from sklearn.metrics import (
@@ -29,9 +29,6 @@ from sklearn.model_selection import (
     GroupKFold,
     GroupShuffleSplit,
 )
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
 
 import mlflow
 
@@ -219,6 +216,105 @@ class EvasionModel:
 
         return X_train, X_test, y_train, y_test, groups_train, groups_test
 
+    def find_best_threshold(self, model, X, y, beta=2):
+        """
+        Finds the probability threshold that maximizes the F-beta score.
+
+        Parameters
+        ----------
+        model : fitted classifier
+            Any classifier implementing predict_proba().
+        X : pd.DataFrame or np.ndarray
+            Feature matrix.
+        y : pd.Series or np.ndarray
+            Ground-truth labels.
+        beta : float, default=2
+            Beta parameter of the F-beta score.
+        min_threshold : float, default=0.05
+            Lowest threshold to evaluate.
+        max_threshold : float, default=0.95
+            Highest threshold to evaluate.
+        step : float, default=0.01
+            Threshold increment.
+
+        Returns
+        -------
+        best_threshold : float
+            Threshold producing the highest F-beta score.
+
+        best_score : float
+            Best F-beta score.
+
+        results_df : pd.DataFrame
+            F-beta score for every threshold tested.
+        """
+
+        if not hasattr(model, "predict_proba"):
+            raise ValueError("The supplied model does not implement predict_proba().")
+
+        probabilities = model.predict_proba(X)[:, 1]
+        thresholds = np.unique(probabilities)
+
+        scores = []
+
+        best_threshold = 0.5
+        best_score = -1
+
+        for threshold in thresholds:
+            predictions = (probabilities >= threshold).astype(int)
+
+            precision = precision_score(
+                y,
+                predictions,
+                zero_division=0,
+            )
+
+            recall = recall_score(
+                y,
+                predictions,
+                zero_division=0,
+            )
+
+            f1 = f1_score(
+                y,
+                predictions,
+                zero_division=0,
+            )
+
+            f2 = fbeta_score(
+                y,
+                predictions,
+                beta=beta,
+                zero_division=0,
+            )
+
+            scores.append(
+                {
+                    "threshold": threshold,
+                    "precision": precision,
+                    "recall": recall,
+                    "f1": f1,
+                    "f2": f2,
+                }
+            )
+
+            if f2 > best_score:
+                best_score = f2
+                best_threshold = threshold
+
+        results_df = pd.DataFrame(scores)
+
+        print(f"Best threshold: {best_threshold:.2f}")
+        print(f"Best F{beta}: {best_score:.4f}")
+
+        self.best_threshold = best_threshold
+
+        return (
+            best_threshold,
+            best_score,
+            results_df,
+        )
+
     @staticmethod
     def split_calibration_set(
         X_train: pd.DataFrame,
@@ -264,20 +360,140 @@ class EvasionModel:
         )
         return X_train_encoded, X_test_encoded
 
+    def save_roc_pr_curves(self, y_test, y_proba, prefix="xgbOptimizedThreshold"):
+        """
+        Saves ROC and Precision-Recall curves in a clean publication-style format.
+        """
+
+        # -------------------------
+        # ROC CURVE
+        # -------------------------
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+        RocCurveDisplay.from_predictions(
+            y_test, y_proba, ax=ax, color="orange", linewidth=2
+        )
+
+        ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
+
+        ax.set_title("ROC Curve", fontsize=14, fontweight="bold")
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+
+        ax.grid(True, alpha=0.3)
+
+        roc_path = f"{prefix}roc_curve.png"
+        plt.savefig(roc_path, dpi=300, bbox_inches="tight")
+        plt.close()
+
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+        PrecisionRecallDisplay.from_predictions(
+            y_test, y_proba, ax=ax, color="orange", linewidth=2
+        )
+
+        ax.set_title("Precision–Recall Curve", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Recall")
+        ax.set_ylabel("Precision")
+
+        baseline = sum(y_test) / len(y_test)
+        ax.hlines(baseline, 0, 1, linestyles="--", colors="gray", linewidth=1)
+
+        ax.grid(True, alpha=0.3)
+
+        pr_path = f"{prefix}pr_curve.png"
+        plt.savefig(pr_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        return roc_path, pr_path
+
     @staticmethod
-    def results(model, y_test, X_test, save_path=None, prefix="", beta=2):
+    def plot_threshold_analysis(
+        threshold_results,
+        best_threshold,
+        save_path="lgbm_threshold_analysis.png",
+    ):
+
+        plt.figure(figsize=(9, 6))
+
+        plt.plot(
+            threshold_results["threshold"],
+            threshold_results["precision"],
+            label="Precision",
+            linewidth=2,
+        )
+
+        plt.plot(
+            threshold_results["threshold"],
+            threshold_results["recall"],
+            label="Recall",
+            linewidth=2,
+        )
+
+        plt.plot(
+            threshold_results["threshold"],
+            threshold_results["f2"],
+            label="F₂-score",
+            linewidth=3,
+        )
+
+        plt.axvline(
+            best_threshold,
+            color="black",
+            linestyle="--",
+            linewidth=2,
+            label=f"Best threshold = {best_threshold:.2f}",
+        )
+
+        plt.scatter(
+            best_threshold,
+            threshold_results.loc[
+                threshold_results["threshold"] == best_threshold,
+                "f2",
+            ].iloc[0],
+            s=80,
+            zorder=5,
+        )
+
+        plt.xlabel("Decision Threshold")
+        plt.ylabel("Metric Value")
+        plt.title("Threshold Selection Based on F₂-score")
+        plt.xlim(0, 1)
+        plt.ylim(0, 1.05)
+
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+
+        plt.tight_layout()
+
+        plt.savefig(
+            save_path,
+            dpi=300,
+            bbox_inches="tight",
+        )
+
+        plt.show()
+
+        plt.close()
+
+    def results(
+        self,
+        model,
+        y_test,
+        X_test,
+        threshold,
+        save_path=None,
+        prefix="",
+        beta=2,
+    ):
         """
         Prints classification metrics (including ROC-AUC) and shows/saves
         the confusion matrix.
         """
-        y_pred = model.predict(X_test)
-        cm = confusion_matrix(y_test, y_pred)
+        y_proba = model.predict_proba(X_test)[:, 1]
 
-        y_proba = (
-            model.predict_proba(X_test)[:, 1]
-            if hasattr(model, "predict_proba")
-            else None
-        )
+        y_pred = (y_proba >= threshold).astype(int)
+
+        cm = confusion_matrix(y_test, y_pred)
 
         print("\n--- Métricas Detalhadas ---")
         print(
@@ -291,7 +507,7 @@ class EvasionModel:
         f1 = f1_score(y_test, y_pred)
         fbeta = fbeta_score(y_test, y_pred, beta=beta)
 
-        print(f"F_beta: {fbeta}")
+        print(f"F_{beta}: {fbeta}")
 
         auc = None
         auprc = None
@@ -301,8 +517,11 @@ class EvasionModel:
             roc_auc = roc_auc_score(y_test, y_proba)
             print(f"AUPRC: {auprc:.4f}")
             print(f"ROC-AUC: {roc_auc:.4f}")
+            roc_path, pr_path = self.save_roc_pr_curves(y_test, y_proba, prefix)
+        mlflow.log_artifact(roc_path)
+        mlflow.log_artifact(pr_path)
 
-            # Log fundamental metrics to MLflow
+        # Log fundamental metrics to MLflow
         mlflow.log_metric(f"{prefix}accuracy", acc)
         mlflow.log_metric(f"{prefix}precision", prec)
         mlflow.log_metric(f"{prefix}recall", rec)
@@ -332,23 +551,33 @@ class EvasionModel:
             "recall": rec,
             "f1": f1,
             "roc_auc": auc,
+            "auprc": auprc,
         }
 
-    @staticmethod
-    def plot_roc_curve(model, y_test, X_test, save_path=None):
-        if not hasattr(model, "predict_proba"):
-            print("Model has no predict_proba; skipping ROC curve.")
-            return None
+    # def plot_roc_curve(model, y_test, X_test, save_path=None):
+    #     if not hasattr(model, "predict_proba"):
+    #         print("Model has no predict_proba; skipping ROC curve.")
+    #         return None
 
-        RocCurveDisplay.from_estimator(model, X_test, y_test)
-        plt.title("Curva ROC: Evasão Estudantil")
+    #    fig, ax = plt.subplots(figsize=(7, 5))
 
-        if save_path:
-            plt.savefig(save_path)
-            plt.close()
-            mlflow.log_artifact(save_path)
-        else:
-            plt.show()
+    #    RocCurveDisplay.from_predictions(
+    #        y_test, y_proba, ax=ax, color="orange", linewidth=2
+    #    )
+
+    #    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
+
+    #    ax.set_title("ROC Curve", fontsize=14, fontweight="bold")
+    #    ax.set_xlabel("False Positive Rate")
+    #    ax.set_ylabel("True Positive Rate")
+
+    #    ax.grid(True, alpha=0.3)
+
+    #    roc_path = f"{prefix}roc_curve.png"
+    #    plt.savefig(roc_path, dpi=300, bbox_inches="tight")
+    #    plt.close()
+
+    #    fig, ax = plt.subplots(figsize=(7, 5))
 
     @staticmethod
     def calibrate_model(base_model, X_calib, y_calib, method="isotonic"):
@@ -382,16 +611,54 @@ class EvasionModel:
         return calibrated
 
     @staticmethod
-    def plot_calibration_curve(model, y_test, X_test, n_bins=10, save_path=None):
+    def plot_calibration_curve(
+        model,
+        y_test,
+        X_test,
+        n_bins=10,
+        save_path=None,
+        title="Calibration Curve",
+    ):
+        """
+        Plots a publication-quality calibration curve.
+        """
+
         if not hasattr(model, "predict_proba"):
             print("Model has no predict_proba; skipping calibration curve.")
             return None
 
-        CalibrationDisplay.from_estimator(model, X_test, y_test, n_bins=n_bins)
-        plt.title("Curva de Calibração: Evasão Estudantil")
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+        CalibrationDisplay.from_estimator(
+            model,
+            X_test,
+            y_test,
+            n_bins=n_bins,
+            strategy="uniform",
+            ax=ax,
+            color="orange",
+            linewidth=2,
+        )
+
+        # Perfect calibration reference
+        ax.plot(
+            [0, 1],
+            [0, 1],
+            linestyle="--",
+            color="gray",
+            linewidth=1,
+            label="Perfect calibration",
+        )
+
+        ax.set_title(title, fontsize=14, fontweight="bold")
+        ax.set_xlabel("Mean Predicted Probability")
+        ax.set_ylabel("Observed Frequency")
+
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best", frameon=True)
 
         if save_path:
-            plt.savefig(save_path)
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
             plt.close()
             mlflow.log_artifact(save_path)
         else:
@@ -489,10 +756,10 @@ class EvasionModel:
 
         return X_train_enc, X_test_enc, y_train, y_test, groups_train, groups_test
 
-    def run_svm(
+    def run_xgboost(
         self,
         csv_path,
-        save_path="svm_confusion_matrix.png",
+        save_path="xgb_confusion_matrix.png",
         calib_size=0.2,
     ):
         (
@@ -510,6 +777,24 @@ class EvasionModel:
         X_calib = X_calib.replace([np.inf, -np.inf], np.nan).fillna(0)
         X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0)
 
+        params = {
+            "n_estimators": 1500,
+            "learning_rate": 0.005,
+            "max_depth": 7,
+            "min_child_weight": 1,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "gamma": 0,
+            "reg_alpha": 0,
+            "reg_lambda": 1,
+            "objective": "binary:logistic",
+            "scale_pos_weight": 0.86,
+            "random_state": 42,
+            "tree_method": "hist",
+            "eval_metric": "logloss",
+            "verbosity": 0,
+        }
+
         gkf = GroupKFold(n_splits=10)
 
         auc_scores = []
@@ -525,79 +810,97 @@ class EvasionModel:
             X_fold_val = X_train.iloc[val_idx]
             y_fold_val = y_train.iloc[val_idx]
 
-            svm = make_pipeline(
-                StandardScaler(),
-                SVC(
-                    C=1.0,
-                    kernel="rbf",
-                    gamma="scale",
-                    probability=True,
-                    random_state=42,
-                    # class_weight={0: 1, 1: 5}
-                ),
-            )
+            xgb_model = xgb.XGBClassifier(**params)
 
-            svm.fit(
+            xgb_model.fit(
                 X_fold_train,
                 y_fold_train,
             )
 
-            y_proba = svm.predict_proba(X_fold_val)[:, 1]
+            y_proba = xgb_model.predict_proba(X_fold_val)[:, 1]
 
-            auc_scores.append(roc_auc_score(y_fold_val, y_proba))
+            auc_scores.append(
+                roc_auc_score(
+                    y_fold_val,
+                    y_proba,
+                )
+            )
 
         print(f"CV ROC-AUC: {np.mean(auc_scores):.4f} (+/- {np.std(auc_scores):.4f})")
 
-        svm = make_pipeline(
-            StandardScaler(),
-            SVC(
-                C=1.0,
-                kernel="rbf",
-                gamma="scale",
-                probability=True,
-                random_state=42,
-            ),
-        )
+        # ---------------------------------------
+        # Train final model
+        # ---------------------------------------
 
-        svm.fit(
+        xgb_model = xgb.XGBClassifier(**params)
+
+        xgb_model.fit(
             X_train,
             y_train,
         )
 
-        metrics = self.results(
-            svm,
-            y_test,
-            X_test,
-            save_path=save_path,
-        )
+        # ---------------------------------------
+        # Calibrate probabilities
+        # ---------------------------------------
 
-        self.plot_roc_curve(
-            svm,
-            y_test,
-            X_test,
-        )
-
-        calibrated_svm = self.calibrate_model(
-            svm,
+        calibrated_xgb = self.calibrate_model(
+            xgb_model,
             X_calib,
             y_calib,
         )
 
-        print("\n--- Calibrated SVM results ---")
+        # ---------------------------------------
+        # Find best threshold
+        # ---------------------------------------
 
-        self.results(
-            calibrated_svm,
+        (
+            best_threshold,
+            best_f2,
+            threshold_results,
+        ) = self.find_best_threshold(
+            calibrated_xgb,
+            X_calib,
+            y_calib,
+            beta=2,
+        )
+
+        print(f"\nBest threshold: {best_threshold:.2f}")
+        print(f"Best calibration F2: {best_f2:.4f}")
+
+        # ---------------------------------------
+        # Plot threshold analysis
+        # ---------------------------------------
+
+        self.plot_threshold_analysis(
+            threshold_results,
+            best_threshold,
+            save_path="xgb_threshold_analysis.png",
+        )
+
+        # ---------------------------------------
+        # Final evaluation
+        # ---------------------------------------
+
+        metrics = self.results(
+            calibrated_xgb,
             y_test,
             X_test,
+            threshold=best_threshold,
+            save_path=save_path,
         )
 
         self.plot_calibration_curve(
-            calibrated_svm,
+            calibrated_xgb,
             y_test,
             X_test,
+            save_path="xgbOptimizedThreshold-calibration-curve.png",
         )
 
-        return svm, calibrated_svm, metrics
+        return (
+            xgb_model,
+            calibrated_xgb,
+            metrics,
+        )
 
     # ------------------------------------------------------------------ #
     # Inference / risk-scoring for currently active students
@@ -781,13 +1084,12 @@ class EvasionModel:
 if __name__ == "__main__":
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
     mlflow.set_experiment("evasion_risk_scoring_v1")
-    with mlflow.start_run(run_name="Stacked_Ensemble") as run:
+    with mlflow.start_run(run_name="LightGBM Calibrated") as run:
         start_time = time.time()
 
         model_runner = EvasionModel()
         dfs = model_runner.load_config()
-        # csv_path = dfs["TRAINING_DATASET"]
-        csv_path = "training_ciencia_da_computacao_ativos_2017_2025_1.csv"
+        csv_path = dfs["TRAINING_DATASET"]
         results_path = dfs["RESULTS_PATH"]
 
         training_hash = run.info.run_id
@@ -797,12 +1099,12 @@ if __name__ == "__main__":
         mlflow.set_tag("version", "v1.0")
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
-        # Train the svm (with calibration + ROC-AUC reporting).
-        clf, calibrated_clf, metrics = model_runner.run_svm(csv_path)
+        # Train the stacking ensemble (with calibration + ROC-AUC reporting).
+        clf, calibrated_clf, metrics = model_runner.run_xgboost(csv_path)
 
         # Recompute X_train (without the calibration carve-out) purely as the
         # column-alignment reference for inference, matching what `clf` was
-        # actually fit on. (run_svm already fit `clf` on this same
+        # actually fit on. (run_ensemble already fit `clf` on this same
         # X_train internally; we just need its columns here.)
         X_train_for_alignment, _X_test, _y_train, _y_test, _gtr, _gte = (
             model_runner.prepare_data(csv_path, calib_size=0.0, log_params=False)

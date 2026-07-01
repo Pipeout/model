@@ -6,7 +6,6 @@ import unicodedata
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import mlflow
 import numpy as np
 import pandas as pd
 import xgboost as xgb
@@ -29,6 +28,8 @@ from sklearn.model_selection import (
     GroupKFold,
     GroupShuffleSplit,
 )
+
+import mlflow
 
 
 class EvasionModel:
@@ -484,7 +485,7 @@ class EvasionModel:
 
         return X_train_enc, X_test_enc, y_train, y_test, groups_train, groups_test
 
-    def run_lightgbm(
+    def run_xgboost(
         self,
         csv_path,
         save_path="lgbm_confusion_matrix.png",
@@ -791,7 +792,7 @@ if __name__ == "__main__":
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
         # Train the stacking ensemble (with calibration + ROC-AUC reporting).
-        clf, calibrated_clf, metrics = model_runner.run_lightgbm(csv_path)
+        clf, calibrated_clf, metrics = model_runner.run_xgboost(csv_path)
 
         # Recompute X_train (without the calibration carve-out) purely as the
         # column-alignment reference for inference, matching what `clf` was
