@@ -91,6 +91,7 @@ class EvasionModel:
     def __init__(self, dfs=None, config_path=None):
         self.config_path = config_path or self.get_config_file()
         self.dfs = dfs
+        self.best_threshold = None
 
     # ------------------------------------------------------------------ #
     # Config / IO helpers
@@ -996,9 +997,12 @@ class EvasionModel:
 
         return X_inference
 
-    @staticmethod
+    
     def score_active_students(
-        model, df_latest_active: pd.DataFrame, X_inference: pd.DataFrame
+        self,
+        model,
+        df_latest_active: pd.DataFrame,
+        X_inference: pd.DataFrame,
     ) -> pd.DataFrame:
         """
         Scores active students with the fitted model's predict_proba and
@@ -1019,14 +1023,21 @@ class EvasionModel:
             }
         ).sort_values(by="Probabilidade_Evasao", ascending=False)
 
+
         df_ranking["Nivel_Alerta"] = pd.cut(
             df_ranking["Probabilidade_Evasao"],
-            bins=[0, 0.4, 0.7, 1.0],
-            labels=["Baixo", "Moderado", "Critico"],
+            bins=[0, self.best_threshold, 0.50, 0.75, 1.0],
+            labels=[
+                "Baixo",
+                "Moderado",
+                "Alto",
+                "Critico",
+            ],
             include_lowest=True,
         )
 
         return df_ranking
+
 
     def run_risk_scoring(
         self,
@@ -1074,6 +1085,9 @@ class EvasionModel:
         output_filename = f"{training_hash}_risco_evasao.csv"
 
         out_path = f"{output_dir}/{output_filename}"
+        # for local testing only, uncomment this line 
+         # df_ranking.to_csv("rankingxgboost.csv", index=False)
+
         df_ranking.to_csv(out_path, index=False)
         print(f"\nRisk ranking written to: {out_path}")
 
