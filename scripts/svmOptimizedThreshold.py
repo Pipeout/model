@@ -990,7 +990,7 @@ class EvasionModel:
 if __name__ == "__main__":
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
     mlflow.set_experiment("evasion_risk_scoring_v1")
-    with mlflow.start_run(run_name="Stacked_Ensemble") as run:
+    with mlflow.start_run(run_name="SVM Optimized Threshold") as run:
         start_time = time.time()
 
         model_runner = EvasionModel()
