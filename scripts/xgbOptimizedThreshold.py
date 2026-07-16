@@ -1127,7 +1127,7 @@ if __name__ == "__main__":
         # Score currently active students and write results/ranking CSV.
         model_runner.run_risk_scoring(
             csv_path,
-            model=clf,
+            model=calibrated_clf,
             training_hash=training_hash,
             X_train=X_train_for_alignment,
             output_dir=results_path,
