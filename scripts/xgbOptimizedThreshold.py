@@ -581,7 +581,7 @@ class EvasionModel:
     #    fig, ax = plt.subplots(figsize=(7, 5))
 
     @staticmethod
-    def calibrate_model(base_model, X_calib, y_calib, method="isotonic"):
+    def calibrate_model(base_model, X_calib, y_calib, method="sigmoid"):
         """
         Wraps an already-fitted model so its probabilities are recalibrated
         on a held-out calibration set (X_calib/y_calib) that the base model
