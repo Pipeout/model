@@ -997,7 +997,7 @@ class EvasionModel:
 
         return X_inference
 
-    
+
     def score_active_students(
         self,
         model,
@@ -1085,7 +1085,7 @@ class EvasionModel:
         output_filename = f"{training_hash}_risco_evasao.csv"
 
         out_path = f"{output_dir}/{output_filename}"
-        # for local testing only, uncomment this line 
+        # for local testing only, uncomment this line
          # df_ranking.to_csv("rankingxgboost.csv", index=False)
 
         df_ranking.to_csv(out_path, index=False)
@@ -1113,7 +1113,7 @@ if __name__ == "__main__":
         mlflow.set_tag("version", "v1.0")
         mlflow.set_tag("dataset", "ciencia_da_computacao")
 
-        # Train the stacking ensemble (with calibration + ROC-AUC reporting).
+        # Train the xgboost (with calibration + ROC-AUC reporting).
         clf, calibrated_clf, metrics = model_runner.run_xgboost(csv_path)
 
         # Recompute X_train (without the calibration carve-out) purely as the
@@ -1132,6 +1132,13 @@ if __name__ == "__main__":
             X_train=X_train_for_alignment,
             output_dir=results_path,
         )
+
+
+
+        # calculating the model's feature importance
+        #
+        importances = clf.feature_importances_
+        print(importances)
 
         mlflow.log_param("training_hash", training_hash)
 
